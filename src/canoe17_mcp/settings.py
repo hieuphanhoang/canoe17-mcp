@@ -45,8 +45,22 @@ class Settings:
     read_only: bool = True
     allowed_roots: tuple[Path, ...] = ()
     backend: BackendSettings = BackendSettings()
+    backend_kind: str = "com"
+    fake_config_paths: tuple[Path, ...] = ()
+    fake_licensed: bool = False
 
     def __post_init__(self) -> None:
+        if not isinstance(self.backend_kind, str) or self.backend_kind not in {"com", "fake"}:
+            raise ValueError("backend_kind must be com or fake")
+        if type(self.fake_licensed) is not bool:
+            raise ValueError("fake_licensed must be a boolean")
+        if not isinstance(self.fake_config_paths, tuple) or any(
+            not isinstance(path, Path) or not path.is_absolute() for path in self.fake_config_paths
+        ):
+            raise ValueError("fake_config_paths must be absolute paths")
+        object.__setattr__(
+            self, "fake_config_paths", tuple(p.resolve() for p in self.fake_config_paths)
+        )
         if type(self.read_only) is not bool:
             raise ValueError("read_only must be a boolean")
         if not isinstance(self.allowed_roots, tuple) or any(
@@ -77,7 +91,14 @@ def load_settings(
     if path is not None:
         with Path(path).open("rb") as handle:
             data = tomllib.load(handle)
-    unknown = set(data) - {"read_only", "allowed_roots", "backend"}
+    server_names = {
+        "read_only",
+        "allowed_roots",
+        "backend_kind",
+        "fake_config_paths",
+        "fake_licensed",
+    }
+    unknown = set(data) - server_names - {"backend"}
     if unknown:
         raise ValueError(f"Unknown settings: {sorted(unknown)}")
     backend_table = data.pop("backend", {})
@@ -86,10 +107,14 @@ def load_settings(
     backend = dict(backend_table)
     env = os.environ if environ is None else environ
     backend_names = {field.name for field in fields(BackendSettings)}
-    for name in {"read_only", "allowed_roots"} | backend_names:
+    for name in server_names | backend_names:
         key = f"CANOE17_MCP_{name.upper()}"
         if key in env:
-            value = env[key] if name in {"lock_key", "min_evidence"} else json.loads(env[key])
+            value = (
+                env[key]
+                if name in {"lock_key", "min_evidence", "backend_kind"}
+                else json.loads(env[key])
+            )
             (backend if name in backend_names else data)[name] = value
     if "min_evidence" in backend:
         backend["min_evidence"] = Evidence(backend["min_evidence"])
@@ -100,11 +125,17 @@ def load_settings(
     roots = data.get("allowed_roots", [])
     if not isinstance(roots, list) or any(not isinstance(p, str) or not p for p in roots):
         raise ValueError("allowed_roots must be an array of nonempty paths")
+    fake_paths = data.get("fake_config_paths", [])
+    if not isinstance(fake_paths, list) or any(not isinstance(p, str) or not p for p in fake_paths):
+        raise ValueError("fake_config_paths must be an array of nonempty paths")
     try:
         return Settings(
             read_only=data.get("read_only", True),
             allowed_roots=tuple(Path(p) for p in roots),
             backend=BackendSettings(**backend),
+            backend_kind=data.get("backend_kind", "com"),
+            fake_config_paths=tuple(Path(p) for p in fake_paths),
+            fake_licensed=data.get("fake_licensed", False),
         )
     except TypeError as exc:
         raise ValueError(f"Invalid backend setting: {exc}") from exc

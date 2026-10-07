@@ -5,11 +5,15 @@ build-backend = "hatchling.build"
 [project]
 name = "canoe17-mcp"
 version = "0.1.0"
-description = "CANoe 17 MCP foundations: policy, contracts and a labelled fake backend"
+description = "CANoe 17 stdio MCP server with safety policy and explicit COM or fake backend"
 requires-python = ">=3.12"
 dependencies = [
     "jsonschema>=4.26.0",
+    "mcp>=1.26,<2",
 ]
+
+[project.scripts]
+canoe17-mcp = "canoe17_mcp.server:main"
 
 [project.optional-dependencies]
 com = [

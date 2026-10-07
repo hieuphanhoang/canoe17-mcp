@@ -87,7 +87,10 @@ class SafetyPolicy:
             # Current-configuration mutations have an implicit target too.
             # Open/quit may leave an out-of-root config, but cannot save it.
             saves_current = params.get("on_dirty") == "save"
-            if request.action not in {"connect", "open_config", "quit"} or saves_current:
+            if (
+                request.action not in {"connect", "open_config", "quit", "operation.cancel"}
+                or saves_current
+            ):
                 if preview.configuration_path is not None:
                     self.allowed_path(preview.configuration_path)
 
@@ -98,6 +101,7 @@ class SafetyPolicy:
         confirm: bool,
         dispatch: Callable[[c.CallContext], c.OperationStatus],
         wait_s: float | None = None,
+        preview_call: Callable[[], c.Observed[c.EffectPreview]] | None = None,
     ) -> PolicyResult:
         self.check_access(write=True)
         if type(confirm) is not bool:
@@ -115,7 +119,7 @@ class SafetyPolicy:
             if preview is None:
                 if len(self._previews) >= 128 and request not in self._previews:
                     raise c.BackendError(c.ErrorCode.BUSY, "Too many outstanding previews")
-                preview = self.backend.preview(request)
+                preview = self.backend.preview(request) if preview_call is None else preview_call()
                 for key, value in request.params:
                     if key.endswith("_id") or key == "qualifier":
                         epoch = self._id_epochs.get(value) if isinstance(value, str) else None
@@ -144,3 +148,39 @@ class SafetyPolicy:
             operation = dispatch(c.CallContext(expected_epoch=preview.epoch, wait_s=wait))
             del self._previews[request]
             return PolicyResult(preview, operation, needs_confirmation=False)
+
+    def cancel_operation(self, operation_id: str, *, confirm: bool) -> PolicyResult:
+        """Control-lane cancellation is bound to the operation, not the current config.
+
+        A queued job can be cancelled. An issued RPC cannot be unsent; the backend
+        retains its pollable state. This stays available during degradation.
+        """
+
+        def preview() -> c.Observed[c.EffectPreview]:
+            observed = self.backend.operation(operation_id)
+            return c.Observed(
+                c.EffectPreview(
+                    "operation.cancel",
+                    affected=(operation_id,),
+                    notes=(
+                        "Cancellation does not undo dispatched effects or prove CANoe stopped.",
+                    ),
+                ),
+                observed.value.epoch,
+                observed.snapshot_age_s,
+                observed.busy_with,
+                observed.degraded,
+            )
+
+        def dispatch(ctx: c.CallContext) -> c.OperationStatus:
+            if self.backend.operation(operation_id).value.epoch != ctx.expected_epoch:
+                raise c.BackendError(c.ErrorCode.STALE_SESSION, "Operation epoch changed")
+            return self.backend.cancel(operation_id)
+
+        return self.invoke(
+            c.EffectRequest("operation.cancel", (("operation_id", operation_id),)),
+            confirm=confirm,
+            dispatch=dispatch,
+            wait_s=0,
+            preview_call=preview,
+        )

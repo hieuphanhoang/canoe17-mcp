@@ -1,7 +1,12 @@
-# First-milestone foundations; there is not yet a runnable MCP server.
+# Run: uv run canoe17-mcp --config canoe17-mcp.example.toml
+# Selection is explicit; COM failures never fall back to the fake backend.
+backend_kind = "com"
 read_only = true
 # Empty denies filesystem access. Use absolute project directories on your PC.
 allowed_roots = []
+# Fake mode models only these in-memory configurations; no files are created/read.
+fake_config_paths = []
+fake_licensed = false
 
 [backend]
 lock_key = "default"

@@ -61,3 +61,24 @@ def test_wait_is_bounded_separately() -> None:
     assert settings.wait_seconds(0) == 0
     with pytest.raises(ValueError):
         settings.wait_seconds(5)
+
+
+def test_explicit_backend_and_fake_settings(tmp_path: Path) -> None:
+    import json
+
+    settings = load_settings(
+        environ={
+            "CANOE17_MCP_BACKEND_KIND": "fake",
+            "CANOE17_MCP_FAKE_CONFIG_PATHS": json.dumps([str(tmp_path / "demo.cfg")]),
+            "CANOE17_MCP_FAKE_LICENSED": "true",
+        }
+    )
+    assert settings.backend_kind == "fake" and settings.fake_licensed
+    assert settings.fake_config_paths == (tmp_path / "demo.cfg",)
+    assert Settings().backend_kind == "com"
+    with pytest.raises(ValueError):
+        load_settings(environ={"CANOE17_MCP_BACKEND_KIND": "auto"})
+    with pytest.raises(ValueError):
+        load_settings(environ={"CANOE17_MCP_FAKE_LICENSED": '"true"'})
+    with pytest.raises(ValueError):
+        Settings(fake_config_paths=(Path("relative.cfg"),))
