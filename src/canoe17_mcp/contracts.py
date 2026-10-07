@@ -43,8 +43,9 @@ Rules every backend follows
    ``Open(path, False, False)`` on a modified configuration; it discards the
    changes (api-evidence C2). Any failure of a dispatched call is
    ``CANOE_REJECTED`` with its HRESULT, unless positively identified as
-   ``LICENSE_REQUIRED`` (description text, api-evidence C3/M1; HRESULT kept). ``Modified`` does not cover every
-   change (api-evidence C5), so the dirty check is necessary, not sufficient.
+   ``LICENSE_REQUIRED`` (description text, api-evidence C3/M1; HRESULT kept).
+   ``Modified`` does not cover every change (api-evidence C5), so the dirty
+   check is necessary, not sufficient.
 """
 
 from __future__ import annotations
