@@ -63,7 +63,9 @@ from canoe17_mcp.contracts import (
     SessionStatus,
     SummarySection,
     Support,
+    TestEnvironmentInfo,
     TesterPresentInfo,
+    TestModuleInfo,
     TestReportLocation,
     TestRunSpec,
     TestRunStatus,
@@ -612,7 +614,10 @@ class ComBackend:
         return self._read("test_setup", self.session.test_setup)
 
     def can_controller(self, bus: str, channel: int) -> Observed[CanControllerInfo]:
-        raise BackendError(ErrorCode.CAPABILITY_UNAVAILABLE, "can_controller is not implemented.")
+        return self._read(
+            f"can_controller:{bus}:{channel}",
+            lambda e: self.session.can_controller(bus, channel),
+        )
 
     def write_window(self, max_chars: int) -> Observed[WriteWindowText]:
         def read(epoch: int) -> WriteWindowText:
@@ -788,51 +793,235 @@ class ComBackend:
 
     # ================================================= not in the first slice
 
+    # ============================================ licence-free configuration edits
+    # Verified live on sample copies without a licence (api-evidence N1-N4, T3-T5).
+    # Saving the result still needs a licence (C3).
+
+    def _existing_file(self, path: str, what: str) -> str:
+        if not Path(path).is_file():
+            raise BackendError(ErrorCode.NOT_FOUND, f"{what} {path} does not exist.")
+        return str(Path(path))
+
+    def _channel_in_range(self, bus_obj: Any, bus: str, channel: int) -> None:
+        count = int(bus_obj.Channels.Count)
+        if not 1 <= channel <= count:
+            raise BackendError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"Bus {bus!r} has channels 1..{count}; CANoe rejects channel {channel} "
+                "(api-evidence N3).",
+            )
+
     def add_database(self, path: str, bus: str, channel: int, ctx: CallContext) -> OperationStatus:
-        return self._not_implemented("database.add")
+        def job(step: StepContext) -> DatabaseInfo:
+            self._require_connected()
+            self._refuse_if_measuring("adding a database")
+            file = self._existing_file(path, "Database")
+            b = self.session.bus_named(bus)
+            self._channel_in_range(b, bus, channel)
+            for d in self.session.databases(self.store.epoch):
+                if d.bus == bus and d.path.lower() == file.lower():
+                    raise BackendError(ErrorCode.ALREADY_EXISTS, f"{file} is already on {bus}.")
+            dbs = late(b.Databases)
+            step.dispatch("adding")
+            dbs.Add(file)
+            new = late(dbs.Item(int(dbs.Count)))
+            if int(new.Channel) != channel:
+                step.phase("setting_channel")
+                new.Channel = channel
+            infos = self.session.databases(self.store.epoch)
+            return next(
+                d for d in reversed(infos) if d.bus == bus and d.path.lower() == file.lower()
+            )
+
+        return self._submit("database.add", job, ctx)
 
     def remove_database(self, database_id: str, ctx: CallContext) -> OperationStatus:
-        return self._not_implemented("database.remove")
+        def job(step: StepContext) -> Removed:
+            self._require_connected()
+            self._refuse_if_measuring("removing a database")
+            objs = self.session.database_objects()
+            entries = self.session.database_entries()
+            idx = self.session.ids.resolve("databases", self.store.epoch, entries, database_id)
+            db, bus_name = objs[idx]
+            dbs = late(self.session.bus_named(bus_name).Databases)
+            target = str(db.FullName).lower()
+            position = next(
+                i
+                for i in range(1, int(dbs.Count) + 1)
+                if str(late(dbs.Item(i)).FullName).lower() == target
+            )
+            step.dispatch("removing")
+            dbs.Remove(position)
+            self.session.ids.clear()
+            return Removed(database_id)
+
+        return self._submit("database.remove", job, ctx)
 
     def add_bus(self, name: str, bus_type: Literal["CAN"], ctx: CallContext) -> OperationStatus:
+        # Buses.Remove removed nothing and buses were renamed (api-evidence B1).
         return self._not_implemented("bus.add")
 
     def remove_bus(self, bus_id: str, ctx: CallContext) -> OperationStatus:
         return self._not_implemented("bus.remove")
 
+    def _node(self, node_id: str) -> tuple[int, Any]:
+        objs = self.session.node_objects()
+        idx = self.session.ids.resolve(
+            "nodes", self.store.epoch, self.session.node_entries(), node_id
+        )
+        return idx, late(objs[idx])
+
     def add_node(
         self, name: str, bus: str, capl_path: str | None, ctx: CallContext
     ) -> OperationStatus:
-        return self._not_implemented("node.add")
+        def job(step: StepContext) -> NodeInfo:
+            self._require_connected()
+            self._refuse_if_measuring("adding a node")
+            file = self._existing_file(capl_path, "CAPL file") if capl_path else None
+            b = self.session.bus_named(bus)
+            if any(n.name == name for n in self.session.nodes(self.store.epoch)):
+                raise BackendError(ErrorCode.ALREADY_EXISTS, f"A node named {name!r} exists.")
+            nodes = late(self.session.require_configuration().SimulationSetup.Nodes)
+            step.dispatch("adding")
+            nodes.Add(name)
+            node = next(late(n) for n in self.session.node_objects() if str(n.Name) == name)
+            if file:
+                step.phase("setting_capl")
+                node.FullName = file
+            if not bool(node.IsBusAttached(b)):
+                step.phase("attaching")
+                node.AttachBus(b)
+            return next(n for n in self.session.nodes(self.store.epoch) if n.name == name)
+
+        return self._submit("node.add", job, ctx)
 
     def remove_node(self, node_id: str, ctx: CallContext) -> OperationStatus:
-        return self._not_implemented("node.remove")
+        def job(step: StepContext) -> Removed:
+            self._require_connected()
+            self._refuse_if_measuring("removing a node")
+            idx, _ = self._node(node_id)
+            nodes = late(self.session.require_configuration().SimulationSetup.Nodes)
+            step.dispatch("removing")
+            nodes.Remove(idx + 1)
+            self.session.ids.clear()
+            return Removed(node_id)
+
+        return self._submit("node.remove", job, ctx)
 
     def set_node_active(self, node_id: str, active: bool, ctx: CallContext) -> OperationStatus:
-        return self._not_implemented("node.set_active")
+        def job(step: StepContext) -> NodeInfo:
+            self._require_connected()
+            self._refuse_if_measuring("activating or deactivating a node")
+            idx, node = self._node(node_id)
+            step.dispatch("setting_active")
+            node.Active = active
+            return self.session.nodes(self.store.epoch)[idx]
+
+        return self._submit("node.set_active", job, ctx)
 
     def attach_node_bus(
         self, node_id: str, bus: str, attach: bool, ctx: CallContext
     ) -> OperationStatus:
-        return self._not_implemented("node.attach_bus" if attach else "node.detach_bus")
+        def job(step: StepContext) -> NodeInfo:
+            self._require_connected()
+            self._refuse_if_measuring("changing node bus attachment")
+            idx, node = self._node(node_id)
+            b = self.session.bus_named(bus)
+            if not attach and bool(node.IsBusAttached(b)):
+                attached = list(node.AttachedBuses or ())
+                if len(attached) <= 1:
+                    raise BackendError(
+                        ErrorCode.INVALID_ARGUMENT,
+                        f"{bus!r} is the node's only bus; CANoe refuses to detach it "
+                        "(api-evidence N5). Attach another bus first.",
+                    )
+            if bool(node.IsBusAttached(b)) != attach:
+                step.dispatch("attaching" if attach else "detaching")
+                if attach:
+                    node.AttachBus(b)
+                else:
+                    node.DetachBus(b)
+            return self.session.nodes(self.store.epoch)[idx]
+
+        return self._submit("node.attach_bus" if attach else "node.detach_bus", job, ctx)
 
     def set_can_bitrate(
         self, bus: str, channel: int, bitrate_bps: int, ctx: CallContext
     ) -> OperationStatus:
+        # CANController.Baudrate writes read back inconsistent values (api-evidence K2).
         return self._not_implemented("can_controller.set_bitrate")
 
     def add_test_environment(self, tse_path: str, ctx: CallContext) -> OperationStatus:
-        return self._not_implemented("test_setup.add_environment")
+        def job(step: StepContext) -> TestEnvironmentInfo:
+            self._require_connected()
+            self._refuse_if_measuring("adding a test environment")
+            file = self._existing_file(tse_path, "Test environment")  # Add needs a file (T3)
+            for env in self.session.test_setup(self.store.epoch).environments:
+                if env.path and env.path.lower() == file.lower():
+                    raise BackendError(ErrorCode.ALREADY_EXISTS, f"{file} is already loaded.")
+            envs = late(self.session.require_configuration().TestSetup.TestEnvironments)
+            step.dispatch("adding")
+            envs.Add(file)
+            setup = self.session.test_setup(self.store.epoch)
+            return next(e for e in setup.environments if (e.path or "").lower() == file.lower())
+
+        return self._submit("test_setup.add_environment", job, ctx)
 
     def add_test_module(
         self, environment_id: str, can_path: str, ctx: CallContext
     ) -> OperationStatus:
-        return self._not_implemented("test_setup.add_module")
+        def job(step: StepContext) -> TestModuleInfo:
+            self._require_connected()
+            self._refuse_if_measuring("adding a test module")
+            file = self._existing_file(can_path, "Test module")
+            envs = self.session.test_environment_objects()
+            idx = self.session.ids.resolve(
+                "test_environments", self.store.epoch, [e for e, _ in envs], environment_id
+            )
+            mods = late(envs[idx][1].TestModules)
+            before = int(mods.Count)
+            step.dispatch("adding")
+            mods.Add(file)  # appended at the end (api-evidence T4)
+            setup = self.session.test_setup(self.store.epoch)
+            env = setup.environments[idx]
+            if len(env.modules) != before + 1:
+                raise BackendError(
+                    ErrorCode.CANOE_REJECTED, f"CANoe did not add {file} to {environment_id}."
+                )
+            return env.modules[-1]
+
+        return self._submit("test_setup.add_module", job, ctx)
 
     def set_test_module_enabled(
         self, module_id: str, enabled: bool, ctx: CallContext
     ) -> OperationStatus:
-        return self._not_implemented("test_setup.set_enabled")
+        def job(step: StepContext) -> TestModuleInfo:
+            self._require_connected()
+            self._refuse_if_measuring("enabling or disabling a test module")
+            if module_id.startswith("tm-sim:"):
+                raise BackendError(
+                    ErrorCode.CAPABILITY_UNAVAILABLE,
+                    "Simulation Setup test nodes are switched with node.set_active.",
+                )
+            if "@" in module_id:
+                raise BackendError(
+                    ErrorCode.AMBIGUOUS_ID,
+                    f"{module_id} is one of several same-named modules; rename one in CANoe.",
+                )
+            found = [
+                m
+                for mid, _, _, m in self.session.test_module_objects(self.store.epoch)
+                if mid == module_id
+            ]
+            if not found:
+                raise BackendError(ErrorCode.NOT_FOUND, f"No test module {module_id}.")
+            module = late(found[0])
+            step.dispatch("setting_enabled")
+            module.Enabled = enabled
+            setup = self.session.test_setup(self.store.epoch)
+            return next(m for e in setup.environments for m in e.modules if m.id == module_id)
+
+        return self._submit("test_setup.set_enabled", job, ctx)
 
     def start_test_run(self, spec: TestRunSpec, ctx: CallContext) -> TestRunStatus:
         raise BackendError(ErrorCode.CAPABILITY_UNAVAILABLE, "Test runs are not implemented yet.")

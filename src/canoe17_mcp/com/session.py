@@ -21,6 +21,7 @@ from canoe17_mcp.com.process import canoe_processes
 from canoe17_mcp.contracts import (
     BackendError,
     BusInfo,
+    CanControllerInfo,
     ConfigSummary,
     DatabaseInfo,
     DiagDescriptionInfo,
@@ -29,6 +30,7 @@ from canoe17_mcp.contracts import (
     TestEnvironmentInfo,
     TestModuleInfo,
     TestSetupInfo,
+    escape_id_segment,
 )
 
 log = logging.getLogger(__name__)
@@ -36,8 +38,6 @@ log = logging.getLogger(__name__)
 PROGID = "CANoe.Application"
 OWN_OPEN_WINDOW_S = 15.0
 """OnOpen arrived about 1.8 s after Open returned (api-evidence C1)."""
-OWN_OPEN_REPEAT_S = 2.0
-"""Duplicate OnOpen after a fresh launch came 0.06 s after the first (C6)."""
 
 DIAG_MODES = {
     0: "interpretation_only",
@@ -178,9 +178,11 @@ class ComSession:
     def is_own_open(self, path: str) -> bool:
         """True for the OnOpen our own open/save triggered.
 
-        After a fresh launch CANoe fires OnOpen twice for one Open call
-        (api-evidence C6), so after the first match the same path is still
-        recognised for a short repeat window, then no longer.
+        CANoe sometimes fires OnOpen twice for one Open call, with the second
+        arriving at an unpredictable delay (api-evidence C6). So every OnOpen for
+        the path we opened counts as ours until the window ends. Trade-off: a GUI
+        reopen of the same file inside that window does not bump the epoch; stale
+        IDs then still fail as NOT_FOUND, and @n IDs by fingerprint.
         """
         own = self._own_open
         if own is None:
@@ -189,10 +191,7 @@ class ComSession:
         if now > own[1]:
             self._own_open = None
             return False
-        if path.lower() == own[0]:
-            self._own_open = (own[0], min(own[1], now + OWN_OPEN_REPEAT_S))
-            return True
-        return False
+        return path.lower() == own[0]
 
     # ------------------------------------------------------------------ reads
 
@@ -251,10 +250,35 @@ class ComSession:
         objs = self.bus_objects()
         entries = [Entry(str(b.Name)) for b in objs]
         ids = self.ids.issue("buses", epoch, entries)
+        # CANoe 17 COM exposes no bus type property (api-evidence B2).
         return tuple(
-            BusInfo(ids[i], entries[i].name, str(_safe(lambda b=b: b.BusType) or "CAN"))
+            BusInfo(
+                ids[i],
+                entries[i].name,
+                "unknown",
+                tuple(range(1, int(_safe(lambda b=b: late(b).Channels.Count) or 0) + 1)),
+            )
             for i, b in enumerate(objs)
         )
+
+    def bus_named(self, name: str) -> Any:
+        matches = [b for b in self.bus_objects() if str(b.Name) == name]
+        if not matches:
+            raise BackendError(ErrorCode.NOT_FOUND, f"No bus named {name!r}.")
+        if len(matches) > 1:
+            raise BackendError(ErrorCode.AMBIGUOUS_ID, f"Several buses are named {name!r}.")
+        return late(matches[0])
+
+    def can_controller(self, bus: str, channel: int) -> CanControllerInfo:
+        b = self.bus_named(bus)
+        count = int(b.Channels.Count)
+        if not 1 <= channel <= count:
+            raise BackendError(
+                ErrorCode.NOT_FOUND, f"Bus {bus!r} has channels 1..{count}, not {channel}."
+            )
+        ctl = late(late(b.Channels.Item(channel)).Controller)
+        raw = _safe(lambda: float(ctl.Baudrate))
+        return CanControllerInfo(bus, channel, int(raw) if raw else None, raw)
 
     def node_objects(self) -> list[Any]:
         return items(self.require_configuration().SimulationSetup.Nodes)
@@ -304,17 +328,19 @@ class ComSession:
 
     def test_setup(self, epoch: int) -> TestSetupInfo:
         cfg = self.require_configuration()
-        envs = items(cfg.TestSetup.TestEnvironments)
+        envs = [late(e) for e in items(late(cfg.TestSetup).TestEnvironments)]
         env_entries = [Entry(str(e.Name), str(_safe(lambda e=e: e.FullName) or "")) for e in envs]
         env_ids = self.ids.issue("test_environments", epoch, env_entries)
         env_infos = []
         for i, env in enumerate(envs):
             modules = []
-            for m in items(env.TestModules):
+            mod_objs = [late(m) for m in items(late(env).TestModules)]
+            mod_ids = module_ids(env_ids[i], [str(m.Name) for m in mod_objs])
+            for j, m in enumerate(mod_objs):
                 name = str(m.Name)
                 modules.append(
                     TestModuleInfo(
-                        id=f"tm:{env_ids[i][len('env:'):]}/{name}",
+                        id=mod_ids[j],
                         name=name,
                         path=str(_safe(lambda m=m: m.FullName) or "") or None,
                         enabled=_safe(lambda m=m: bool(m.Enabled)),
@@ -362,8 +388,48 @@ class ComSession:
             test_setup=self.test_setup(epoch) if want("tests") else None,
         )
 
+    def node_entries(self) -> list[Entry]:
+        return [
+            Entry(str(n.Name), str(_safe(lambda n=n: n.FullName) or ""))
+            for n in self.node_objects()
+        ]
+
+    def test_environment_objects(self) -> list[tuple[Entry, Any]]:
+        cfg = self.require_configuration()
+        envs = [late(e) for e in items(late(cfg.TestSetup).TestEnvironments)]
+        return [(Entry(str(e.Name), str(_safe(lambda e=e: e.FullName) or "")), e) for e in envs]
+
+    def test_module_objects(self, epoch: int) -> list[tuple[str, Any, Any, int]]:
+        """(module_id, TestModules collection, 1-based index, module) for Test Setup
+        modules. Issues environment IDs, so module IDs follow their fingerprint."""
+        cfg = self.require_configuration()
+        envs = [late(e) for e in items(late(cfg.TestSetup).TestEnvironments)]
+        env_entries = [Entry(str(e.Name), str(_safe(lambda e=e: e.FullName) or "")) for e in envs]
+        env_ids = self.ids.issue("test_environments", epoch, env_entries)
+        out = []
+        for i, env in enumerate(envs):
+            mods = late(env).TestModules
+            objs = [late(m) for m in items(mods)]
+            ids = module_ids(env_ids[i], [str(m.Name) for m in objs])
+            out.extend((ids[j], mods, j + 1, m) for j, m in enumerate(objs))
+        return out
+
     def write_window_text(self) -> str:
         return str(self.app.UI.Write.Text)
+
+
+def module_ids(env_id: str, names: list[str]) -> list[str]:
+    """``tm:<env>/<module>`` with escaping and ``@n`` for same-named modules."""
+    env = env_id[len("env:"):]
+    out = []
+    seen: dict[str, int] = {}
+    for name in names:
+        base = f"tm:{env}/{escape_id_segment(name)}"
+        if names.count(name) > 1:
+            seen[name] = seen.get(name, 0) + 1
+            base += f"@{seen[name]}"
+        out.append(base)
+    return out
 
 
 def _safe[T](fn: Callable[[], T]) -> T | None:

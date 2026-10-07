@@ -15,6 +15,7 @@ import pytest
 
 from canoe17_mcp.com.backend import ComBackend
 from canoe17_mcp.contracts import (
+    BackendError,
     BackendSettings,
     CallContext,
     CompileResult,
@@ -162,3 +163,88 @@ def test_licensed_operations_report_licence(backend: ComBackend, sandbox: Path):
     assert start.state is OpState.COMPLETED, start.error
     stop = run(backend, backend.measurement_stop(ctx(backend)), wait=60)
     assert stop.state is OpState.COMPLETED, stop.error
+
+
+def test_licence_free_config_edits(backend: ComBackend, sandbox: Path):
+    """Node, database and test-setup edits on the UDSBasic copy; all discarded at the end."""
+    from canoe17_mcp.contracts import (
+        CanControllerInfo,
+        DatabaseInfo,
+        NodeInfo,
+        Removed,
+        TestEnvironmentInfo,
+        TestModuleInfo,
+    )
+
+    udsbasic = sandbox / "UDSBasic"
+    dbc = sandbox / "Easy" / "CANdb" / "easy.dbc"
+    tse = udsbasic / "ProbeTestSetup.tse"
+    if not dbc.is_file() or not tse.is_file():
+        pytest.skip("needs Easy/CANdb/easy.dbc and UDSBasic/ProbeTestSetup.tse in the sandbox")
+    cfg = str(udsbasic / "UDSBasic.cfg")
+    on_dirty: DirtyPolicy = "discard" if backend.status().configuration_modified else "refuse"
+    result_as(run(backend, backend.open_config(cfg, on_dirty, False, ctx(backend))), OpenResult)
+
+    ctl = backend.can_controller("CAN", 1).value
+    assert isinstance(ctl, CanControllerInfo) and ctl.bitrate_bps == 500000
+    assert backend.buses().value[0].channels == (1,)
+
+    capl = udsbasic / "Nodes" / "ProbeNode.can"
+    capl.write_text("variables {}\n", encoding="ascii")
+    node = result_as(
+        run(backend, backend.add_node("ProbeNode", "CAN", str(capl), ctx(backend))), NodeInfo
+    )
+    assert node.id == "node:ProbeNode" and node.capl_path == str(capl)
+    off = result_as(run(backend, backend.set_node_active(node.id, False, ctx(backend))), NodeInfo)
+    assert off.active is False
+    only_bus = run(backend, backend.attach_node_bus(node.id, "CAN", False, ctx(backend)))
+    assert error_code(only_bus) is ErrorCode.INVALID_ARGUMENT and not only_bus.dispatched
+    removed = result_as(run(backend, backend.remove_node(node.id, ctx(backend))), Removed)
+    assert removed.id == node.id
+    assert all(n.name != "ProbeNode" for n in backend.nodes().value)
+
+    bad = run(backend, backend.add_database(str(dbc), "CAN", 2, ctx(backend)))
+    assert bad.state is OpState.FAILED and error_code(bad) is ErrorCode.INVALID_ARGUMENT
+    assert not bad.dispatched
+    db = result_as(
+        run(backend, backend.add_database(str(dbc), "CAN", 1, ctx(backend))), DatabaseInfo
+    )
+    assert db.id == "db:easy" and db.channel == 1 and db.bus == "CAN"
+    dup = run(backend, backend.add_database(str(dbc), "CAN", 1, ctx(backend)))
+    assert error_code(dup) is ErrorCode.ALREADY_EXISTS
+    result_as(run(backend, backend.remove_database(db.id, ctx(backend))), Removed)
+    assert backend.databases().value == ()
+
+    env = result_as(
+        run(backend, backend.add_test_environment(str(tse), ctx(backend))), TestEnvironmentInfo
+    )
+    assert env.path == str(tse) and len(env.modules) == 2
+    module = result_as(
+        run(
+            backend,
+            backend.add_test_module(
+                env.id, str(udsbasic / "Tester" / "TestModule.can"), ctx(backend)
+            ),
+        ),
+        TestModuleInfo,
+    )
+    assert module.id == f"{'tm:' + env.id[len('env:'):]}/Test 4" and module.enabled is True
+    disabled = result_as(
+        run(backend, backend.set_test_module_enabled(module.id, False, ctx(backend))),
+        TestModuleInfo,
+    )
+    assert disabled.enabled is False
+
+    missing = run(backend, backend.add_test_environment(str(udsbasic / "nope.tse"), ctx(backend)))
+    assert error_code(missing) is ErrorCode.NOT_FOUND and not missing.dispatched
+
+    with pytest.raises(BackendError) as no_bus:
+        backend.add_bus("ProbeBus", "CAN", ctx(backend))
+    assert no_bus.value.code is ErrorCode.CAPABILITY_UNAVAILABLE
+
+    assert backend.status().configuration_modified is True
+    reset = result_as(
+        run(backend, backend.open_config(cfg, "discard", False, ctx(backend))), OpenResult
+    )
+    assert reset.discarded_changes
+    capl.unlink(missing_ok=True)

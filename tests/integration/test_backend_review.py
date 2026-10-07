@@ -274,3 +274,21 @@ def test_preview_blocks_while_measuring(backend: ComBackend, action: str, licens
     )
     pv = backend.preview(EffectRequest(action, (("on_dirty", "save"),)))
     assert pv.value.blocked_by is BlockReason.MEASUREMENT_RUNNING
+
+
+# Own-open recognition (api-evidence C6) ---------------------------------------
+
+
+def test_own_open_matches_repeats_until_window_ends(monkeypatch: pytest.MonkeyPatch):
+    from canoe17_mcp.com import session as sess
+
+    now = [100.0]
+    monkeypatch.setattr(sess.time, "monotonic", lambda: now[0])
+    s = sess.ComSession()
+    s.expect_own_open("E:/X/A.cfg")
+    assert not s.is_own_open("E:/X/B.cfg")
+    assert s.is_own_open("e:/x/a.cfg")
+    now[0] += 5
+    assert s.is_own_open("E:/X/A.cfg")  # late duplicate still ours
+    now[0] += sess.OWN_OPEN_WINDOW_S
+    assert not s.is_own_open("E:/X/A.cfg")  # window over: a real change

@@ -92,3 +92,85 @@ evidence = "documented"
 support = "implemented"
 evidence = "demo_verified"
 ref = "api-evidence T1, T2"
+
+[operations."database.add"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence N3"
+
+[operations."database.remove"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence N3"
+
+[operations."bus.list"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence B2"
+
+[operations."bus.add"]
+support = "not_implemented"
+evidence = "demo_verified"
+ref = "api-evidence B1"
+note = "Buses.Remove removed nothing in CANoe 17; add/remove withheld."
+
+[operations."bus.remove"]
+support = "not_implemented"
+evidence = "demo_verified"
+ref = "api-evidence B1"
+
+[operations."node.list"]
+support = "implemented"
+evidence = "demo_verified"
+
+[operations."node.add"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence N1"
+
+[operations."node.remove"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence N1"
+
+[operations."node.set_active"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence N2"
+note = "Does not mark the configuration modified (C5)."
+
+[operations."node.attach_bus"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence N1"
+
+[operations."node.detach_bus"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence N1"
+
+[operations."can_controller.read"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence K1"
+
+[operations."can_controller.set_bitrate"]
+support = "not_implemented"
+evidence = "demo_verified"
+ref = "api-evidence K2"
+note = "Baudrate writes read back inconsistent values."
+
+[operations."test_setup.add_environment"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence T3"
+
+[operations."test_setup.add_module"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence T4"
+
+[operations."test_setup.set_enabled"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence T4"
