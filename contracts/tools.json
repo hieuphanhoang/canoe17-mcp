@@ -1,0 +1,3078 @@
+{
+  "document_kind": "canoe17-mcp-tool-catalogue",
+  "version": "0.2",
+  "status": "Accepted by Claude and Codex; capability-gated implementation",
+  "workspace_only": false,
+  "target_clients": [
+    "Claude Code",
+    "Codex",
+    "opencode/Qwen"
+  ],
+  "tool_count": 22,
+  "rules": {
+    "confirmation": "Write actions accept confirm=false by default and return a side-effect preview; confirm=true does not imply dirty-state discard.",
+    "read_only": "Read-only policy operates per action; grouped read actions remain available.",
+    "operation_waits": "Mutating handlers may return queued operation IDs; long waits never occupy the STA worker.",
+    "capabilities": "Register only actions appropriate to the enabled profile and proven backend capabilities.",
+    "dispatch": "Validate inputs/roots/evidence first; no arbitrary COM paths or methods.",
+    "schema_note": "inputSchema is the flat client discovery schema. validationSchema is the strict server-only schema; validate the selected action before dispatch. Never publish validationSchema as inputSchema.",
+    "epoch": "Carry the epoch of the relevant previously returned ID snapshot or preview; check at backend dispatch. No client epoch parameter. On stale_session re-read list/summary and retry; never authorize old IDs using a silently refreshed epoch. Backend contracts.py v0.2 provides atomic snapshot/context guards."
+  },
+  "tools": [
+    {
+      "name": "canoe_status",
+      "description": "Session and policy state without launching CANoe.",
+      "actions": {
+        "read": {
+          "effect": "read",
+          "required_parameters": [],
+          "note": ""
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "validationSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "canoe_open_config",
+      "description": "Open a configuration with explicit dirty-state handling.",
+      "actions": {
+        "open": {
+          "effect": "write",
+          "required_parameters": [
+            "path"
+          ],
+          "note": "Discard is separately explicit; launch only on verified no-active-instance evidence."
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Path resolved under configured allowed roots."
+          },
+          "on_dirty": {
+            "type": "string",
+            "enum": [
+              "refuse",
+              "save",
+              "discard"
+            ],
+            "default": "refuse"
+          },
+          "launch_if_absent": {
+            "type": "boolean",
+            "default": true
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "validationSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Path resolved under configured allowed roots."
+          },
+          "on_dirty": {
+            "type": "string",
+            "enum": [
+              "refuse",
+              "save",
+              "discard"
+            ],
+            "default": "refuse"
+          },
+          "launch_if_absent": {
+            "type": "boolean",
+            "default": true
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "canoe_save_config",
+      "description": "Save the configuration; saving a copy changes the active path.",
+      "actions": {
+        "save": {
+          "effect": "write",
+          "required_parameters": [],
+          "note": "Back up affected existing sources/destinations. Version conversion is excluded."
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "as_path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Path resolved under configured allowed roots."
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "validationSchema": {
+        "type": "object",
+        "properties": {
+          "as_path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Path resolved under configured allowed roots."
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "canoe_quit",
+      "description": "Quit an idle CANoe session after dirty-state handling.",
+      "actions": {
+        "quit": {
+          "effect": "write",
+          "required_parameters": [],
+          "note": ""
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "on_dirty": {
+            "type": "string",
+            "enum": [
+              "refuse",
+              "save",
+              "discard"
+            ],
+            "default": "refuse"
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "validationSchema": {
+        "type": "object",
+        "properties": {
+          "on_dirty": {
+            "type": "string",
+            "enum": [
+              "refuse",
+              "save",
+              "discard"
+            ],
+            "default": "refuse"
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "canoe_get_config_summary",
+      "description": "Summarize configuration elements.",
+      "actions": {
+        "read": {
+          "effect": "read",
+          "required_parameters": [],
+          "note": ""
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "section": {
+            "type": "string",
+            "enum": [
+              "all",
+              "networks",
+              "databases",
+              "nodes",
+              "diagnostics",
+              "tests",
+              "logging",
+              "panels"
+            ],
+            "default": "all"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "validationSchema": {
+        "type": "object",
+        "properties": {
+          "section": {
+            "type": "string",
+            "enum": [
+              "all",
+              "networks",
+              "databases",
+              "nodes",
+              "diagnostics",
+              "tests",
+              "logging",
+              "panels"
+            ],
+            "default": "all"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "canoe_database",
+      "description": "Manage databases and CAN channel assignment.",
+      "actions": {
+        "list": {
+          "effect": "read",
+          "required_parameters": [],
+          "note": ""
+        },
+        "add": {
+          "effect": "write",
+          "required_parameters": [
+            "path",
+            "bus",
+            "channel"
+          ],
+          "note": ""
+        },
+        "remove": {
+          "effect": "write",
+          "required_parameters": [
+            "database_id"
+          ],
+          "note": ""
+        },
+        "set_channel": {
+          "effect": "write",
+          "required_parameters": [
+            "database_id",
+            "channel"
+          ],
+          "note": ""
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "list",
+              "add",
+              "remove",
+              "set_channel"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Path resolved under configured allowed roots. Used by actions: add. Required for: add."
+          },
+          "bus": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Used by actions: add. Required for: add."
+          },
+          "channel": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Used by actions: add, set_channel. Required for: add, set_channel."
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false,
+            "description": "Used by actions: add, remove, set_channel. Optional for those actions."
+          },
+          "database_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Obtain from list/summary results. Qualified db:, bus:, node:, env:, tm: or log: ID as applicable; names escape % as %25 and / as %2F. Duplicate @n suffixes are session-scoped; refresh IDs after stale_session. Used by actions: remove, set_channel. Required for: remove, set_channel."
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      },
+      "validationSchema": {
+        "type": "object",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "list"
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "add"
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Path resolved under configured allowed roots."
+              },
+              "bus": {
+                "type": "string",
+                "minLength": 1
+              },
+              "channel": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "path",
+              "bus",
+              "channel"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "remove"
+              },
+              "database_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Obtain from list/summary results. Qualified db:, bus:, node:, env:, tm: or log: ID as applicable; names escape % as %25 and / as %2F. Duplicate @n suffixes are session-scoped; refresh IDs after stale_session."
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "database_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "set_channel"
+              },
+              "database_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Obtain from list/summary results. Qualified db:, bus:, node:, env:, tm: or log: ID as applicable; names escape % as %25 and / as %2F. Duplicate @n suffixes are session-scoped; refresh IDs after stale_session."
+              },
+              "channel": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "database_id",
+              "channel"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "canoe_bus",
+      "description": "Manage simulation buses using verified capabilities.",
+      "actions": {
+        "list": {
+          "effect": "read",
+          "required_parameters": [],
+          "note": ""
+        },
+        "add": {
+          "effect": "write",
+          "required_parameters": [
+            "name",
+            "bus_type"
+          ],
+          "note": ""
+        },
+        "remove": {
+          "effect": "write",
+          "required_parameters": [
+            "bus_id"
+          ],
+          "note": ""
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "list",
+              "add",
+              "remove"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Used by actions: add. Required for: add."
+          },
+          "bus_type": {
+            "type": "string",
+            "enum": [
+              "CAN"
+            ],
+            "description": "Used by actions: add. Required for: add."
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false,
+            "description": "Used by actions: add, remove. Optional for those actions."
+          },
+          "bus_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Obtain from list/summary results. Qualified db:, bus:, node:, env:, tm: or log: ID as applicable; names escape % as %25 and / as %2F. Duplicate @n suffixes are session-scoped; refresh IDs after stale_session. Used by actions: remove. Required for: remove."
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      },
+      "validationSchema": {
+        "type": "object",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "list"
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "add"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "bus_type": {
+                "type": "string",
+                "enum": [
+                  "CAN"
+                ]
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "name",
+              "bus_type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "remove"
+              },
+              "bus_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Obtain from list/summary results. Qualified db:, bus:, node:, env:, tm: or log: ID as applicable; names escape % as %25 and / as %2F. Duplicate @n suffixes are session-scoped; refresh IDs after stale_session."
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "bus_id"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "canoe_node",
+      "description": "Manage CAPL nodes and bus assignment.",
+      "actions": {
+        "list": {
+          "effect": "read",
+          "required_parameters": [],
+          "note": ""
+        },
+        "add": {
+          "effect": "write",
+          "required_parameters": [
+            "name",
+            "bus"
+          ],
+          "note": ""
+        },
+        "remove": {
+          "effect": "write",
+          "required_parameters": [
+            "node_id"
+          ],
+          "note": ""
+        },
+        "set_active": {
+          "effect": "write",
+          "required_parameters": [
+            "node_id",
+            "active"
+          ],
+          "note": ""
+        },
+        "attach_bus": {
+          "effect": "write",
+          "required_parameters": [
+            "node_id",
+            "bus"
+          ],
+          "note": ""
+        },
+        "detach_bus": {
+          "effect": "write",
+          "required_parameters": [
+            "node_id",
+            "bus"
+          ],
+          "note": ""
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "list",
+              "add",
+              "remove",
+              "set_active",
+              "attach_bus",
+              "detach_bus"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Used by actions: add. Required for: add."
+          },
+          "capl_path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Path resolved under configured allowed roots. Used by actions: add. Optional for those actions."
+          },
+          "bus": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Used by actions: add, attach_bus, detach_bus. Required for: add, attach_bus, detach_bus."
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false,
+            "description": "Used by actions: add, remove, set_active, attach_bus, detach_bus. Optional for those actions."
+          },
+          "node_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Obtain from list/summary results. Qualified db:, bus:, node:, env:, tm: or log: ID as applicable; names escape % as %25 and / as %2F. Duplicate @n suffixes are session-scoped; refresh IDs after stale_session. Used by actions: remove, set_active, attach_bus, detach_bus. Required for: remove, set_active, attach_bus, detach_bus."
+          },
+          "active": {
+            "type": "boolean",
+            "description": "Used by actions: set_active. Required for: set_active."
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      },
+      "validationSchema": {
+        "type": "object",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "list"
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "add"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "capl_path": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Path resolved under configured allowed roots."
+              },
+              "bus": {
+                "type": "string",
+                "minLength": 1
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "name",
+              "bus"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "remove"
+              },
+              "node_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Obtain from list/summary results. Qualified db:, bus:, node:, env:, tm: or log: ID as applicable; names escape % as %25 and / as %2F. Duplicate @n suffixes are session-scoped; refresh IDs after stale_session."
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "node_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "set_active"
+              },
+              "node_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Obtain from list/summary results. Qualified db:, bus:, node:, env:, tm: or log: ID as applicable; names escape % as %25 and / as %2F. Duplicate @n suffixes are session-scoped; refresh IDs after stale_session."
+              },
+              "active": {
+                "type": "boolean"
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "node_id",
+              "active"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "attach_bus"
+              },
+              "node_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Obtain from list/summary results. Qualified db:, bus:, node:, env:, tm: or log: ID as applicable; names escape % as %25 and / as %2F. Duplicate @n suffixes are session-scoped; refresh IDs after stale_session."
+              },
+              "bus": {
+                "type": "string",
+                "minLength": 1
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "node_id",
+              "bus"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "detach_bus"
+              },
+              "node_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Obtain from list/summary results. Qualified db:, bus:, node:, env:, tm: or log: ID as applicable; names escape % as %25 and / as %2F. Duplicate @n suffixes are session-scoped; refresh IDs after stale_session."
+              },
+              "bus": {
+                "type": "string",
+                "minLength": 1
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "node_id",
+              "bus"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "canoe_diag_description",
+      "description": "Load diagnostic descriptions and open selected windows.",
+      "actions": {
+        "list": {
+          "effect": "read",
+          "required_parameters": [],
+          "note": ""
+        },
+        "add": {
+          "effect": "write",
+          "required_parameters": [
+            "path",
+            "network"
+          ],
+          "note": "Omit ECU identifier for CDD; return actual qualifier and mode."
+        },
+        "remove": {
+          "effect": "write",
+          "required_parameters": [
+            "qualifier"
+          ],
+          "note": ""
+        },
+        "open_windows": {
+          "effect": "write",
+          "required_parameters": [
+            "qualifier"
+          ],
+          "note": ""
+        },
+        "close_windows": {
+          "effect": "write",
+          "required_parameters": [
+            "qualifier"
+          ],
+          "note": ""
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "list",
+              "add",
+              "remove",
+              "open_windows",
+              "close_windows"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Path resolved under configured allowed roots. Used by actions: add. Required for: add."
+          },
+          "network": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Used by actions: add. Required for: add."
+          },
+          "ecu_identifier": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Used by actions: add. Optional for those actions."
+          },
+          "open_console": {
+            "type": "boolean",
+            "default": true,
+            "description": "Used by actions: add. Optional for those actions."
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false,
+            "description": "Used by actions: add, remove, open_windows, close_windows. Optional for those actions."
+          },
+          "qualifier": {
+            "type": "string",
+            "minLength": 1,
+            "description": "diag: ID returned by list, including @n for duplicates; bound to its snapshot epoch and collection fingerprint."
+          },
+          "window": {
+            "type": "string",
+            "enum": [
+              "console",
+              "session",
+              "fault_memory",
+              "all"
+            ],
+            "default": "console",
+            "description": "Used by actions: open_windows, close_windows. Optional for those actions."
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      },
+      "validationSchema": {
+        "type": "object",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "list"
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "add"
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Path resolved under configured allowed roots."
+              },
+              "network": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ecu_identifier": {
+                "type": "string",
+                "minLength": 1
+              },
+              "open_console": {
+                "type": "boolean",
+                "default": true
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "path",
+              "network"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "remove"
+              },
+              "qualifier": {
+                "type": "string",
+                "minLength": 1,
+                "description": "diag: ID returned by list, including @n for duplicates; bound to its snapshot epoch and collection fingerprint."
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "qualifier"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "open_windows"
+              },
+              "qualifier": {
+                "type": "string",
+                "minLength": 1,
+                "description": "diag: ID returned by list, including @n for duplicates; bound to its snapshot epoch and collection fingerprint."
+              },
+              "window": {
+                "type": "string",
+                "enum": [
+                  "console",
+                  "session",
+                  "fault_memory",
+                  "all"
+                ],
+                "default": "console"
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "qualifier"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "close_windows"
+              },
+              "qualifier": {
+                "type": "string",
+                "minLength": 1,
+                "description": "diag: ID returned by list, including @n for duplicates; bound to its snapshot epoch and collection fingerprint."
+              },
+              "window": {
+                "type": "string",
+                "enum": [
+                  "console",
+                  "session",
+                  "fault_memory",
+                  "all"
+                ],
+                "default": "console"
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "qualifier"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "canoe_can_controller",
+      "description": "Read controller settings or change Classical CAN baudrate.",
+      "actions": {
+        "read": {
+          "effect": "read",
+          "required_parameters": [
+            "bus",
+            "channel"
+          ],
+          "note": ""
+        },
+        "set_baudrate": {
+          "effect": "write",
+          "required_parameters": [
+            "bus",
+            "channel",
+            "bitrate_bps"
+          ],
+          "note": "Expose bits per second; backend must verify and convert COM units. FD timing excluded."
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "read",
+              "set_baudrate"
+            ]
+          },
+          "bus": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Used by actions: read, set_baudrate. Required for: read, set_baudrate."
+          },
+          "channel": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Used by actions: read, set_baudrate. Required for: read, set_baudrate."
+          },
+          "bitrate_bps": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Used by actions: set_baudrate. Required for: set_baudrate."
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false,
+            "description": "Used by actions: set_baudrate. Optional for those actions."
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      },
+      "validationSchema": {
+        "type": "object",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "read"
+              },
+              "bus": {
+                "type": "string",
+                "minLength": 1
+              },
+              "channel": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [
+              "action",
+              "bus",
+              "channel"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "set_baudrate"
+              },
+              "bus": {
+                "type": "string",
+                "minLength": 1
+              },
+              "channel": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "bitrate_bps": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "bus",
+              "channel",
+              "bitrate_bps"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "canoe_compile",
+      "description": "Compile configured CAPL and return verified compile results.",
+      "actions": {
+        "compile": {
+          "effect": "write",
+          "required_parameters": [],
+          "note": ""
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "confirm": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "validationSchema": {
+        "type": "object",
+        "properties": {
+          "confirm": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "canoe_measurement",
+      "description": "Manage measurement lifecycle and preview start effects.",
+      "actions": {
+        "status": {
+          "effect": "read",
+          "required_parameters": [],
+          "note": ""
+        },
+        "start": {
+          "effect": "write",
+          "required_parameters": [],
+          "note": "Preview active nodes and auto-start tests; start requires a current valid compilation."
+        },
+        "stop": {
+          "effect": "write",
+          "required_parameters": [],
+          "note": "Use StopEx; completion requires lifecycle evidence."
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "status",
+              "start",
+              "stop"
+            ]
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false,
+            "description": "Used by actions: start, stop. Optional for those actions."
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      },
+      "validationSchema": {
+        "type": "object",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "status"
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "start"
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "stop"
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "canoe_operation",
+      "description": "Observe or cancel queued/ongoing server operations.",
+      "actions": {
+        "status": {
+          "effect": "read",
+          "required_parameters": [
+            "operation_id"
+          ],
+          "note": ""
+        },
+        "cancel": {
+          "effect": "write",
+          "required_parameters": [
+            "operation_id"
+          ],
+          "note": "Never equate cancellation of observation with undoing a sent request. In-flight uncertain results stay outcome_unknown."
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "status",
+              "cancel"
+            ]
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Opaque server-issued op-<12 hex> token, valid only in this server process; obtain from a start/mutation result. Used by actions: status, cancel. Required for: status, cancel."
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false,
+            "description": "Used by actions: cancel. Optional for those actions."
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      },
+      "validationSchema": {
+        "type": "object",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "status"
+              },
+              "operation_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Opaque server-issued op-<12 hex> token, valid only in this server process; obtain from a start/mutation result."
+              }
+            },
+            "required": [
+              "action",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "cancel"
+              },
+              "operation_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Opaque server-issued op-<12 hex> token, valid only in this server process; obtain from a start/mutation result."
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "canoe_test_setup",
+      "description": "Discover and manage CAPL test setup.",
+      "actions": {
+        "list": {
+          "effect": "read",
+          "required_parameters": [],
+          "note": ""
+        },
+        "add_environment": {
+          "effect": "write",
+          "required_parameters": [
+            "tse_path"
+          ],
+          "note": ""
+        },
+        "add_module": {
+          "effect": "write",
+          "required_parameters": [
+            "environment_id",
+            "can_path"
+          ],
+          "note": ""
+        },
+        "set_enabled": {
+          "effect": "write",
+          "required_parameters": [
+            "module_id",
+            "enabled"
+          ],
+          "note": ""
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "list",
+              "add_environment",
+              "add_module",
+              "set_enabled"
+            ]
+          },
+          "tse_path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Path resolved under configured allowed roots. Used by actions: add_environment. Required for: add_environment."
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false,
+            "description": "Used by actions: add_environment, add_module, set_enabled. Optional for those actions."
+          },
+          "environment_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Obtain from list/summary results. Qualified db:, bus:, node:, env:, tm: or log: ID as applicable; names escape % as %25 and / as %2F. Duplicate @n suffixes are session-scoped; refresh IDs after stale_session. Used by actions: add_module. Required for: add_module."
+          },
+          "can_path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Path resolved under configured allowed roots. Used by actions: add_module. Required for: add_module."
+          },
+          "module_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Obtain from list/summary results. Qualified db:, bus:, node:, env:, tm: or log: ID as applicable; names escape % as %25 and / as %2F. Duplicate @n suffixes are session-scoped; refresh IDs after stale_session. Used by actions: set_enabled. Required for: set_enabled."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Used by actions: set_enabled. Required for: set_enabled."
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      },
+      "validationSchema": {
+        "type": "object",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "list"
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "add_environment"
+              },
+              "tse_path": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Path resolved under configured allowed roots."
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "tse_path"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "add_module"
+              },
+              "environment_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Obtain from list/summary results. Qualified db:, bus:, node:, env:, tm: or log: ID as applicable; names escape % as %25 and / as %2F. Duplicate @n suffixes are session-scoped; refresh IDs after stale_session."
+              },
+              "can_path": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Path resolved under configured allowed roots."
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "environment_id",
+              "can_path"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "set_enabled"
+              },
+              "module_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Obtain from list/summary results. Qualified db:, bus:, node:, env:, tm: or log: ID as applicable; names escape % as %25 and / as %2F. Duplicate @n suffixes are session-scoped; refresh IDs after stale_session."
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "module_id",
+              "enabled"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "canoe_test_run",
+      "description": "Start, observe and stop test runs; retrieve reports. For start supply exactly one of module_ids or environment_id. For report supply run_id (optionally module_id) OR xml_path alone. Only Test Setup tm: IDs can be started; tm-sim: Simulation Setup nodes are not startable.",
+      "actions": {
+        "start": {
+          "effect": "write",
+          "required_parameters": [],
+          "note": "Exactly one selector: module_ids or environment_id. Return operation/run ID; no STA wait-until-finished."
+        },
+        "status": {
+          "effect": "read",
+          "required_parameters": [
+            "run_id"
+          ],
+          "note": ""
+        },
+        "stop": {
+          "effect": "write",
+          "required_parameters": [
+            "run_id"
+          ],
+          "note": "Request stop, then confirm event; preserve test verdict separately from report failure."
+        },
+        "report": {
+          "effect": "read",
+          "required_parameters": [],
+          "note": "Either run_id with optional module_id, or explicit xml_path. Historical paths are not claimed to belong to a current run."
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "start",
+              "status",
+              "stop",
+              "report"
+            ]
+          },
+          "module_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "uniqueItems": true,
+            "description": "Obtain from list/summary results. Qualified db:, bus:, node:, env:, tm: or log: ID as applicable; names escape % as %25 and / as %2F. Duplicate @n suffixes are session-scoped; refresh IDs after stale_session. Used by actions: start. Optional for those actions."
+          },
+          "environment_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Obtain from list/summary results. Qualified db:, bus:, node:, env:, tm: or log: ID as applicable; names escape % as %25 and / as %2F. Duplicate @n suffixes are session-scoped; refresh IDs after stale_session. Used by actions: start. Optional for those actions."
+          },
+          "start_measurement": {
+            "type": "boolean",
+            "default": false,
+            "description": "Used by actions: start. Optional for those actions."
+          },
+          "timeout_s": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 3600,
+            "description": "Operation deadline in seconds, not a client wait timeout. Omitted: operation_default_timeout_s (draft default 30). Maximum: operation_max_timeout_s (draft default/ceiling 3600); server validates and publishes the configured lower limit. Used by actions: start. Optional for those actions."
+          },
+          "capture_write": {
+            "type": "boolean",
+            "default": true,
+            "description": "Used by actions: start. Optional for those actions."
+          },
+          "logging_block_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Obtain from list/summary results. Qualified db:, bus:, node:, env:, tm: or log: ID as applicable; names escape % as %25 and / as %2F. Duplicate @n suffixes are session-scoped; refresh IDs after stale_session. Used by actions: start. Optional for those actions."
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false,
+            "description": "Used by actions: start, stop. Optional for those actions."
+          },
+          "run_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Opaque server-issued run-<12 hex> token, valid only in this server process; obtain from a start/mutation result. Used by actions: status, stop, report. Required for: status, stop."
+          },
+          "module_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Obtain from list/summary results. Qualified db:, bus:, node:, env:, tm: or log: ID as applicable; names escape % as %25 and / as %2F. Duplicate @n suffixes are session-scoped; refresh IDs after stale_session. Used by actions: report. Optional for those actions."
+          },
+          "xml_path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Path resolved under configured allowed roots. Used by actions: report. Optional for those actions."
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      },
+      "validationSchema": {
+        "type": "object",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "start"
+              },
+              "module_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 1,
+                "uniqueItems": true,
+                "description": "Obtain from list/summary results. Qualified db:, bus:, node:, env:, tm: or log: ID as applicable; names escape % as %25 and / as %2F. Duplicate @n suffixes are session-scoped; refresh IDs after stale_session."
+              },
+              "environment_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Obtain from list/summary results. Qualified db:, bus:, node:, env:, tm: or log: ID as applicable; names escape % as %25 and / as %2F. Duplicate @n suffixes are session-scoped; refresh IDs after stale_session."
+              },
+              "start_measurement": {
+                "type": "boolean",
+                "default": false
+              },
+              "timeout_s": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 3600,
+                "description": "Operation deadline in seconds, not a client wait timeout. Omitted: operation_default_timeout_s (draft default 30). Maximum: operation_max_timeout_s (draft default/ceiling 3600); server validates and publishes the configured lower limit."
+              },
+              "capture_write": {
+                "type": "boolean",
+                "default": true
+              },
+              "logging_block_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Obtain from list/summary results. Qualified db:, bus:, node:, env:, tm: or log: ID as applicable; names escape % as %25 and / as %2F. Duplicate @n suffixes are session-scoped; refresh IDs after stale_session."
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "additionalProperties": false,
+            "oneOf": [
+              {
+                "required": [
+                  "module_ids"
+                ],
+                "not": {
+                  "required": [
+                    "environment_id"
+                  ]
+                }
+              },
+              {
+                "required": [
+                  "environment_id"
+                ],
+                "not": {
+                  "required": [
+                    "module_ids"
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "status"
+              },
+              "run_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Opaque server-issued run-<12 hex> token, valid only in this server process; obtain from a start/mutation result."
+              }
+            },
+            "required": [
+              "action",
+              "run_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "stop"
+              },
+              "run_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Opaque server-issued run-<12 hex> token, valid only in this server process; obtain from a start/mutation result."
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "run_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "report"
+              },
+              "run_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Opaque server-issued run-<12 hex> token, valid only in this server process; obtain from a start/mutation result."
+              },
+              "module_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Obtain from list/summary results. Qualified db:, bus:, node:, env:, tm: or log: ID as applicable; names escape % as %25 and / as %2F. Duplicate @n suffixes are session-scoped; refresh IDs after stale_session."
+              },
+              "xml_path": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Path resolved under configured allowed roots."
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "additionalProperties": false,
+            "oneOf": [
+              {
+                "required": [
+                  "run_id"
+                ],
+                "not": {
+                  "required": [
+                    "xml_path"
+                  ]
+                }
+              },
+              {
+                "required": [
+                  "xml_path"
+                ],
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "run_id"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "module_id"
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "canoe_diag_request",
+      "description": "Submit a symbolic or raw diagnostic request asynchronously. For start supply network and ecu_qualifier, and exactly one of service_qualifier or raw_hex; parameters are symbolic-only. Hex must contain complete bytes. Measurement must already be running.",
+      "actions": {
+        "start": {
+          "effect": "write",
+          "required_parameters": [
+            "network",
+            "ecu_qualifier"
+          ],
+          "note": "Exactly one of symbolic service or raw bytes. Actual byte-array marshalling is backend-verified. Requires a running measurement; availability/preview reports measurement_stopped, with no implicit start."
+        },
+        "status": {
+          "effect": "read",
+          "required_parameters": [
+            "operation_id"
+          ],
+          "note": ""
+        },
+        "cancel": {
+          "effect": "write",
+          "required_parameters": [
+            "operation_id"
+          ],
+          "note": "Cancel queued dispatch when possible; cannot unsend UDS. Report local wait cancellation and uncertain hardware outcome explicitly."
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "start",
+              "status",
+              "cancel"
+            ]
+          },
+          "network": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Used by actions: start. Required for: start."
+          },
+          "ecu_qualifier": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Used by actions: start. Required for: start."
+          },
+          "service_qualifier": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Used by actions: start. Optional for those actions."
+          },
+          "parameters": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            },
+            "description": "Used by actions: start. Optional for those actions."
+          },
+          "raw_hex": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F ]+$",
+            "description": "Used by actions: start. Optional for those actions."
+          },
+          "timeout_s": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 3600,
+            "description": "Operation deadline in seconds, not a client wait timeout. Omitted: operation_default_timeout_s (draft default 30). Maximum: operation_max_timeout_s (draft default/ceiling 3600); server validates and publishes the configured lower limit. Used by actions: start. Optional for those actions."
+          },
+          "suppress_positive_response": {
+            "type": "boolean",
+            "default": false,
+            "description": "Used by actions: start. Optional for those actions."
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false,
+            "description": "Used by actions: start, cancel. Optional for those actions."
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Opaque server-issued op-<12 hex> token, valid only in this server process; obtain from a start/mutation result. Used by actions: status, cancel. Required for: status, cancel."
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      },
+      "validationSchema": {
+        "type": "object",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "start"
+              },
+              "network": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ecu_qualifier": {
+                "type": "string",
+                "minLength": 1
+              },
+              "service_qualifier": {
+                "type": "string",
+                "minLength": 1
+              },
+              "parameters": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": [
+                    "string",
+                    "number",
+                    "boolean"
+                  ]
+                }
+              },
+              "raw_hex": {
+                "type": "string",
+                "pattern": "^[0-9a-fA-F ]+$"
+              },
+              "timeout_s": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 3600,
+                "description": "Operation deadline in seconds, not a client wait timeout. Omitted: operation_default_timeout_s (draft default 30). Maximum: operation_max_timeout_s (draft default/ceiling 3600); server validates and publishes the configured lower limit."
+              },
+              "suppress_positive_response": {
+                "type": "boolean",
+                "default": false
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "network",
+              "ecu_qualifier"
+            ],
+            "additionalProperties": false,
+            "oneOf": [
+              {
+                "required": [
+                  "service_qualifier"
+                ],
+                "not": {
+                  "required": [
+                    "raw_hex"
+                  ]
+                }
+              },
+              {
+                "required": [
+                  "raw_hex"
+                ],
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "service_qualifier"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "parameters"
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "status"
+              },
+              "operation_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Opaque server-issued op-<12 hex> token, valid only in this server process; obtain from a start/mutation result."
+              }
+            },
+            "required": [
+              "action",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "cancel"
+              },
+              "operation_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Opaque server-issued op-<12 hex> token, valid only in this server process; obtain from a start/mutation result."
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "operation_id"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "canoe_tester_present",
+      "description": "Manage server-owned Tester Present state.",
+      "actions": {
+        "status": {
+          "effect": "read",
+          "required_parameters": [
+            "network",
+            "ecu_qualifier"
+          ],
+          "note": ""
+        },
+        "start": {
+          "effect": "write",
+          "required_parameters": [
+            "network",
+            "ecu_qualifier"
+          ],
+          "note": " Requires a running measurement; availability/preview reports measurement_stopped, with no implicit start."
+        },
+        "stop": {
+          "effect": "write",
+          "required_parameters": [
+            "network",
+            "ecu_qualifier"
+          ],
+          "note": ""
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "status",
+              "start",
+              "stop"
+            ]
+          },
+          "network": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Used by actions: status, start, stop. Required for: status, start, stop."
+          },
+          "ecu_qualifier": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Used by actions: status, start, stop. Required for: status, start, stop."
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false,
+            "description": "Used by actions: start, stop. Optional for those actions."
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      },
+      "validationSchema": {
+        "type": "object",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "status"
+              },
+              "network": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ecu_qualifier": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "action",
+              "network",
+              "ecu_qualifier"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "start"
+              },
+              "network": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ecu_qualifier": {
+                "type": "string",
+                "minLength": 1
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "network",
+              "ecu_qualifier"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "stop"
+              },
+              "network": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ecu_qualifier": {
+                "type": "string",
+                "minLength": 1
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "network",
+              "ecu_qualifier"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "canoe_value",
+      "description": "Read or write signals and system variables. For signals supply bus/channel/message/name and no namespace; writes must be numeric. For sysvars supply namespace/name, no bus/channel/message, and raw=false.",
+      "actions": {
+        "get": {
+          "effect": "read",
+          "required_parameters": [
+            "kind",
+            "name"
+          ],
+          "note": ""
+        },
+        "set": {
+          "effect": "write",
+          "required_parameters": [
+            "kind",
+            "name",
+            "value"
+          ],
+          "note": "Signal writes affect simulation/IL output only. Match values to actual COM variable types."
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "get",
+              "set"
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "signal",
+              "sysvar"
+            ],
+            "description": "Used by actions: get, set. Required for: get, set."
+          },
+          "bus": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Used by actions: get, set. Optional for those actions."
+          },
+          "channel": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Used by actions: get, set. Optional for those actions."
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Used by actions: get, set. Optional for those actions."
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Used by actions: get, set. Required for: get, set."
+          },
+          "namespace": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Used by actions: get, set. Optional for those actions."
+          },
+          "raw": {
+            "type": "boolean",
+            "default": false,
+            "description": "Used by actions: get, set. Optional for those actions."
+          },
+          "value": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              }
+            ],
+            "description": "Used by actions: set. Required for: set."
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false,
+            "description": "Used by actions: set. Optional for those actions."
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      },
+      "validationSchema": {
+        "type": "object",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "get"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "signal",
+                  "sysvar"
+                ]
+              },
+              "bus": {
+                "type": "string",
+                "minLength": 1
+              },
+              "channel": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "message": {
+                "type": "string",
+                "minLength": 1
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "namespace": {
+                "type": "string",
+                "minLength": 1
+              },
+              "raw": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "kind",
+              "name"
+            ],
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "kind": {
+                      "const": "signal"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "bus",
+                    "channel",
+                    "message"
+                  ],
+                  "not": {
+                    "required": [
+                      "namespace"
+                    ]
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "kind": {
+                      "const": "sysvar"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "namespace"
+                  ],
+                  "not": {
+                    "anyOf": [
+                      {
+                        "required": [
+                          "bus"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "channel"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "message"
+                        ]
+                      }
+                    ]
+                  },
+                  "properties": {
+                    "raw": {
+                      "const": false
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "set"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "signal",
+                  "sysvar"
+                ]
+              },
+              "bus": {
+                "type": "string",
+                "minLength": 1
+              },
+              "channel": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "message": {
+                "type": "string",
+                "minLength": 1
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "namespace": {
+                "type": "string",
+                "minLength": 1
+              },
+              "raw": {
+                "type": "boolean",
+                "default": false
+              },
+              "value": {
+                "oneOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    }
+                  }
+                ]
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action",
+              "kind",
+              "name",
+              "value"
+            ],
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "kind": {
+                      "const": "signal"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "bus",
+                    "channel",
+                    "message"
+                  ],
+                  "properties": {
+                    "value": {
+                      "type": "number"
+                    }
+                  },
+                  "not": {
+                    "required": [
+                      "namespace"
+                    ]
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "kind": {
+                      "const": "sysvar"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "namespace"
+                  ],
+                  "not": {
+                    "anyOf": [
+                      {
+                        "required": [
+                          "bus"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "channel"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "message"
+                        ]
+                      }
+                    ]
+                  },
+                  "properties": {
+                    "raw": {
+                      "const": false
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "canoe_call_capl",
+      "description": "Call a previously bound, allowlisted CAPL function.",
+      "actions": {
+        "call": {
+          "effect": "write",
+          "required_parameters": [
+            "function_name"
+          ],
+          "note": "Handles bound during OnInit; no arbitrary CAPL execution."
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "function_name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 10,
+            "default": []
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "function_name"
+        ],
+        "additionalProperties": false
+      },
+      "validationSchema": {
+        "type": "object",
+        "properties": {
+          "function_name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 10,
+            "default": []
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "function_name"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "canoe_send_can_frame",
+      "description": "Request one frame through the verified helper node. Standard IDs are <=2047 unless extended=true. BRS requires fd=true. Hex must contain complete bytes; Classical CAN supports 0-8 bytes, FD supports 0-8/12/16/20/24/32/48/64. Strict server validation enforces these rules.",
+      "actions": {
+        "send": {
+          "effect": "write",
+          "required_parameters": [
+            "channel",
+            "can_id",
+            "data_hex"
+          ],
+          "note": "Validate standard/extended ID and payload length; derive DLC. Helper acceptance is distinct from physical bus observation."
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "can_id": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 536870911
+          },
+          "extended": {
+            "type": "boolean",
+            "default": false
+          },
+          "data_hex": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F ]*$"
+          },
+          "fd": {
+            "type": "boolean",
+            "default": false
+          },
+          "brs": {
+            "type": "boolean",
+            "default": false
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "channel",
+          "can_id",
+          "data_hex"
+        ],
+        "additionalProperties": false
+      },
+      "validationSchema": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "can_id": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 536870911
+          },
+          "extended": {
+            "type": "boolean",
+            "default": false
+          },
+          "data_hex": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F ]*$"
+          },
+          "fd": {
+            "type": "boolean",
+            "default": false
+          },
+          "brs": {
+            "type": "boolean",
+            "default": false
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "channel",
+          "can_id",
+          "data_hex"
+        ],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "extended": {
+                  "const": false
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "can_id": {
+                  "maximum": 2047
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "fd": {
+                  "const": false
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "brs": {
+                  "const": false
+                }
+              }
+            }
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "canoe_helper",
+      "description": "Inspect or install the project helper node and sysvars.",
+      "actions": {
+        "status": {
+          "effect": "read",
+          "required_parameters": [],
+          "note": ""
+        },
+        "install": {
+          "effect": "write",
+          "required_parameters": [],
+          "note": "Install package assets through supported APIs under policy; no hidden installation in read tools."
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "status",
+              "install"
+            ]
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false,
+            "description": "Used by actions: install. Optional for those actions."
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      },
+      "validationSchema": {
+        "type": "object",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "status"
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "install"
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "canoe_write_window",
+      "description": "Read or clear Write-window output.",
+      "actions": {
+        "read": {
+          "effect": "read",
+          "required_parameters": [],
+          "note": ""
+        },
+        "clear": {
+          "effect": "write",
+          "required_parameters": [],
+          "note": ""
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "read",
+              "clear"
+            ]
+          },
+          "max_chars": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65536,
+            "default": 8192,
+            "description": "Used by actions: read. Optional for those actions."
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false,
+            "description": "Used by actions: clear. Optional for those actions."
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      },
+      "validationSchema": {
+        "type": "object",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "read"
+              },
+              "max_chars": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65536,
+                "default": 8192
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "clear"
+              },
+              "confirm": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    }
+  ],
+  "input_schema_dialect": "https://json-schema.org/draft/2020-12/schema"
+}

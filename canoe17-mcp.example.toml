@@ -1,0 +1,20 @@
+# First-milestone foundations; there is not yet a runnable MCP server.
+read_only = true
+# Empty denies filesystem access. Use absolute project directories on your PC.
+allowed_roots = []
+
+[backend]
+lock_key = "default"
+lock_acquire_timeout_s = 0
+dispatch_timeout_s = 10
+operation_default_timeout_s = 30
+operation_max_timeout_s = 3600
+launch_step_s = 180
+open_step_s = 120
+save_step_s = 120
+compile_step_s = 120
+quick_step_s = 15
+report_finalize_timeout_s = 30
+min_evidence = "demo_verified"
+capl_allowlist = []
+allow_launch = true
