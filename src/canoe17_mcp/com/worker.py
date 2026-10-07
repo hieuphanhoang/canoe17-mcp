@@ -27,7 +27,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from canoe17_mcp.com.state import StateStore
+from canoe17_mcp.com.state import DEGRADED_ERROR, StateStore
 from canoe17_mcp.contracts import (
     BackendError,
     ErrorCode,
@@ -96,6 +96,7 @@ class Job:
     operation_id: str | None = None
     """None for read jobs, which are not operations."""
     expected_epoch: int | None = None
+    mutating: bool = False
     done: threading.Event = field(default_factory=threading.Event)
     value: Any = None
     error: BaseException | None = None
@@ -186,15 +187,7 @@ class StaWorker:
         epoch = self.store.epoch if expected_epoch is None else expected_epoch
         op = self.store.new_operation(kind, epoch)
         if mutating and self.store.degraded:
-            self.store.cancel_queued(
-                op.operation_id,
-                ErrorInfo(
-                    ErrorCode.CAPABILITY_UNAVAILABLE,
-                    "Backend is degraded: an earlier operation has an unknown outcome. "
-                    "Poll it until it resolves, then re-read the state before retrying.",
-                    details=(("blocked_by", "degraded"),),
-                ),
-            )
+            self.store.cancel_queued(op.operation_id, DEGRADED_ERROR)
             return self.store.get(op.operation_id) or op
         job = Job(
             fn=fn,
@@ -203,6 +196,7 @@ class StaWorker:
             lane=lane,
             operation_id=op.operation_id,
             expected_epoch=expected_epoch,
+            mutating=mutating,
         )
         self._enqueue(job)
         return op
@@ -307,8 +301,10 @@ class StaWorker:
                 job.done.set()
             return
 
-        if not self.store.try_start(op_id):
-            return  # cancelled while queued
+        if not self.store.try_start(
+            op_id, dispatch_deadline=job.dispatch_deadline, mutating=job.mutating
+        ):
+            return  # cancelled while queued, expired, or refused while degraded
         op = self.store.get(op_id)
         assert op is not None
         if job.expected_epoch is not None and job.expected_epoch != self.store.epoch:

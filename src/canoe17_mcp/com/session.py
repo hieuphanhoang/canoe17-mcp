@@ -36,6 +36,8 @@ log = logging.getLogger(__name__)
 PROGID = "CANoe.Application"
 OWN_OPEN_WINDOW_S = 15.0
 """OnOpen arrived about 1.8 s after Open returned (api-evidence C1)."""
+OWN_OPEN_REPEAT_S = 2.0
+"""Duplicate OnOpen after a fresh launch came 0.06 s after the first (C6)."""
 
 DIAG_MODES = {
     0: "interpretation_only",
@@ -174,15 +176,21 @@ class ComSession:
         self._own_open = (path.lower(), time.monotonic() + OWN_OPEN_WINDOW_S)
 
     def is_own_open(self, path: str) -> bool:
-        """True (once) for the OnOpen our own open/save triggered."""
+        """True for the OnOpen our own open/save triggered.
+
+        After a fresh launch CANoe fires OnOpen twice for one Open call
+        (api-evidence C6), so after the first match the same path is still
+        recognised for a short repeat window, then no longer.
+        """
         own = self._own_open
         if own is None:
             return False
-        if time.monotonic() > own[1]:
+        now = time.monotonic()
+        if now > own[1]:
             self._own_open = None
             return False
         if path.lower() == own[0]:
-            self._own_open = None
+            self._own_open = (own[0], min(own[1], now + OWN_OPEN_REPEAT_S))
             return True
         return False
 

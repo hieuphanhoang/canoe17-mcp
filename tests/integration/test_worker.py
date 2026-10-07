@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from canoe17_mcp.com.lock import SessionLock
+from canoe17_mcp.com.lock import SessionLock, _kernel32
 from canoe17_mcp.com.state import StateStore
 from canoe17_mcp.com.worker import StaWorker
 from canoe17_mcp.contracts import BackendError, ErrorCode, OpState
@@ -178,10 +178,19 @@ def test_lock_abandoned_by_dead_process_is_reacquired(tmp_path):
         f"l = SessionLock({key!r}, sidecar_dir=Path({str(tmp_path)!r}));"
         "assert l.acquire(); os._exit(0)"
     )
-    subprocess.run([sys.executable, "-c", code], check=True)
-    lock = SessionLock(key, sidecar_dir=tmp_path)
-    assert lock.acquire(1.0)
-    lock.release()
+    # Hold a handle (without ownership) so the mutex object outlives the child;
+    # otherwise acquire() would just create a fresh mutex, not exercise WAIT_ABANDONED.
+    k = _kernel32()
+    keeper = k.CreateMutexW(None, False, SessionLock(key).name)
+    assert keeper
+    try:
+        subprocess.run([sys.executable, "-c", code], check=True)
+        lock = SessionLock(key, sidecar_dir=tmp_path)
+        assert lock.acquire(1.0)
+        assert lock.abandoned_previous
+        lock.release()
+    finally:
+        k.CloseHandle(keeper)
 
 
 def test_lock_rejects_bad_key():

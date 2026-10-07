@@ -8,6 +8,7 @@ test documents both situations instead of being skipped.
 from __future__ import annotations
 
 import shutil
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -16,8 +17,13 @@ from canoe17_mcp.com.backend import ComBackend
 from canoe17_mcp.contracts import (
     BackendSettings,
     CallContext,
+    CompileResult,
+    DiagDescriptionInfo,
+    DirtyPolicy,
     EffectRequest,
     ErrorCode,
+    OpenResult,
+    OperationStatus,
     OpState,
 )
 
@@ -27,31 +33,42 @@ WAIT = 240.0
 
 
 @pytest.fixture(scope="module")
-def backend(sandbox: Path, tmp_path_factory: pytest.TempPathFactory):
+def backend(sandbox: Path, tmp_path_factory: pytest.TempPathFactory) -> Iterator[ComBackend]:
     settings = BackendSettings(lock_key="live-probe")
     b = ComBackend(settings, lock_dir=tmp_path_factory.mktemp("lock"))
     yield b
     b.shutdown()
 
 
-def run(b: ComBackend, op, wait: float = WAIT):
+def run(b: ComBackend, op: OperationStatus, wait: float = WAIT) -> OperationStatus:
     done = b.wait(op.operation_id, wait).value
     assert done.state is not OpState.OUTCOME_UNKNOWN, done
     return done
+
+
+def result_as[T](done: OperationStatus, kind: type[T]) -> T:
+    assert done.state is OpState.COMPLETED, done.error
+    assert isinstance(done.result, kind), done.result
+    return done.result
+
+
+def error_code(done: OperationStatus) -> ErrorCode:
+    assert done.error is not None, done
+    return done.error.code
 
 
 def ctx(b: ComBackend) -> CallContext:
     return CallContext(expected_epoch=b.status().epoch)
 
 
-def preview_ctx(b: ComBackend, action: str, **params) -> CallContext:
+def preview_ctx(b: ComBackend, action: str, **params: str) -> CallContext:
     pv = b.preview(EffectRequest(action, tuple(params.items())))
     return CallContext(expected_epoch=pv.epoch)
 
 
 def test_open_inspect_compile(backend: ComBackend, sandbox: Path):
     cfg = str(sandbox / "UDSBasic" / "UDSBasic.cfg")
-    on_dirty = "refuse"
+    on_dirty: DirtyPolicy = "refuse"
     if run(backend, backend.connect()).state is OpState.COMPLETED:
         st = backend.status()
         if st.configuration_modified:
@@ -62,11 +79,10 @@ def test_open_inspect_compile(backend: ComBackend, sandbox: Path):
     op = backend.open_config(
         cfg, on_dirty, True, preview_ctx(backend, "open_config", path=cfg)
     )
-    done = run(backend, op)
-    assert done.state is OpState.COMPLETED, done.error
-    assert done.result.active_path.lower() == cfg.lower()
+    opened = result_as(run(backend, op), OpenResult)
+    assert opened.active_path.lower() == cfg.lower()
     st = backend.status()
-    assert st.connected and st.lock_held and st.epoch == done.result.epoch_after
+    assert st.connected and st.lock_held and st.epoch == opened.epoch_after
 
     diags = backend.diag_descriptions()
     assert diags.epoch == st.epoch
@@ -80,8 +96,8 @@ def test_open_inspect_compile(backend: ComBackend, sandbox: Path):
     assert summary.configuration_path.lower() == cfg.lower()
     assert {n.name for n in summary.nodes} >= {"Tester", "SimDiagECU"}
 
-    comp = run(backend, backend.compile(ctx(backend)))
-    assert comp.state is OpState.COMPLETED and comp.result.success
+    comp = result_as(run(backend, backend.compile(ctx(backend))), CompileResult)
+    assert comp.success
 
 
 def test_diag_windows_and_duplicate_refused(backend: ComBackend, sandbox: Path):
@@ -94,7 +110,7 @@ def test_diag_windows_and_duplicate_refused(backend: ComBackend, sandbox: Path):
         backend,
         backend.add_diag_description(door.network, door.file_path, None, False, ctx(backend)),
     )
-    assert dup.state is OpState.FAILED and dup.error.code is ErrorCode.ALREADY_EXISTS
+    assert dup.state is OpState.FAILED and error_code(dup) is ErrorCode.ALREADY_EXISTS
     assert not dup.dispatched
 
 
@@ -104,7 +120,7 @@ def test_stale_epoch_is_refused(backend: ComBackend, sandbox: Path):
     reopened = run(backend, backend.open_config(cfg, "refuse", False, old))
     assert reopened.state is OpState.COMPLETED
     stale = run(backend, backend.compile(old))
-    assert stale.state is OpState.FAILED and stale.error.code is ErrorCode.STALE_SESSION
+    assert stale.state is OpState.FAILED and error_code(stale) is ErrorCode.STALE_SESSION
     assert not stale.dispatched
 
 
@@ -112,22 +128,25 @@ def test_dirty_refuse_then_discard(backend: ComBackend, sandbox: Path):
     src = sandbox / "UDSBasic" / "Cdd" / "UDS-ExampleEcu-6.0.1.cdd"
     extra = sandbox / "UDSBasic" / "Cdd" / "probe-extra.cdd"
     shutil.copy2(src, extra)
-    added = run(backend, backend.add_diag_description("CAN", str(extra), None, False, ctx(backend)))
-    assert added.state is OpState.COMPLETED, added.error
+    added = result_as(
+        run(backend, backend.add_diag_description("CAN", str(extra), None, False, ctx(backend))),
+        DiagDescriptionInfo,
+    )
     # A different file with a taken ECU qualifier is renamed by CANoe (api-evidence D6)
-    assert added.result.qualifier == "Door_1"
+    assert added.qualifier == "Door_1"
     ids = [d.id for d in backend.diag_descriptions().value]
     assert ids == ["diag:Door", "diag:Door_1"]
     assert backend.status().configuration_modified is True
 
     easy = str(sandbox / "Easy" / "Easy.cfg")
     refused = run(backend, backend.open_config(easy, "refuse", False, ctx(backend)))
-    assert refused.state is OpState.FAILED and refused.error.code is ErrorCode.DIRTY_CONFIG
+    assert refused.state is OpState.FAILED and error_code(refused) is ErrorCode.DIRTY_CONFIG
     assert not refused.dispatched
 
-    discarded = run(backend, backend.open_config(easy, "discard", False, ctx(backend)))
-    assert discarded.state is OpState.COMPLETED, discarded.error
-    assert discarded.result.discarded_changes
+    discarded = result_as(
+        run(backend, backend.open_config(easy, "discard", False, ctx(backend))), OpenResult
+    )
+    assert discarded.discarded_changes
     assert backend.status().configuration_modified is False
 
 
@@ -135,7 +154,7 @@ def test_licensed_operations_report_licence(backend: ComBackend, sandbox: Path):
     cfg = str(sandbox / "UDSBasic" / "UDSBasic.cfg")
     run(backend, backend.open_config(cfg, "refuse", False, ctx(backend)))
     start = run(backend, backend.measurement_start(ctx(backend)), wait=60)
-    if start.state is OpState.FAILED and start.error.code is ErrorCode.LICENSE_REQUIRED:
+    if start.state is OpState.FAILED and error_code(start) is ErrorCode.LICENSE_REQUIRED:
         assert backend.status().licensed is False
         avail = {a.operation: a for a in backend.availability().value}
         assert avail["measurement.start"].blocked_by is not None

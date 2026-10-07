@@ -19,6 +19,7 @@ from typing import Any
 from canoe17_mcp.contracts import (
     OP_TRANSITIONS,
     TERMINAL_STATES,
+    ErrorCode,
     ErrorInfo,
     Observed,
     OperationKind,
@@ -30,6 +31,13 @@ from canoe17_mcp.contracts import (
 )
 
 MAX_FINISHED_OPERATIONS = 500
+
+DEGRADED_ERROR = ErrorInfo(
+    ErrorCode.CAPABILITY_UNAVAILABLE,
+    "Backend is degraded: an earlier operation has an unknown outcome. Poll it until "
+    "it resolves, then re-read the state before retrying. Nothing was sent to CANoe.",
+    details=(("blocked_by", "degraded"),),
+)
 
 
 def wall_now() -> str:
@@ -156,11 +164,44 @@ class StateStore:
         self._changed.notify_all()
         return updated
 
-    def try_start(self, operation_id: str) -> bool:
-        """Atomically QUEUED -> RUNNING. False if it was cancelled meanwhile."""
+    def try_start(
+        self,
+        operation_id: str,
+        *,
+        dispatch_deadline: float | None = None,
+        mutating: bool = False,
+    ) -> bool:
+        """Atomically claim a queued operation: QUEUED -> RUNNING.
+
+        In the same critical section, a job past its dispatch deadline, or a
+        mutating job while the backend is degraded, is moved QUEUED ->
+        CANCELLED instead (never dispatched). False unless it may run.
+        """
         with self._lock:
             op = self._ops.get(operation_id)
             if op is None or op.state is not OpState.QUEUED:
+                return False
+            if dispatch_deadline is not None and time.monotonic() > dispatch_deadline:
+                code = ErrorCode.BUSY if self.busy_with else ErrorCode.DEADLINE_EXCEEDED
+                self._set(
+                    op,
+                    state=OpState.CANCELLED,
+                    finished_wall=wall_now(),
+                    error=ErrorInfo(
+                        code,
+                        "Not dispatched: the dispatch deadline passed before the CANoe "
+                        "worker could start it. Nothing was sent to CANoe.",
+                        retryable=True,
+                    ),
+                )
+                return False
+            if mutating and self.degraded:
+                self._set(
+                    op,
+                    state=OpState.CANCELLED,
+                    finished_wall=wall_now(),
+                    error=DEGRADED_ERROR,
+                )
                 return False
             self._set(op, state=OpState.RUNNING, started_wall=wall_now())
             return True

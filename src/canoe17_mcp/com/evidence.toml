@@ -22,7 +22,9 @@ note = "Licence-gated; not yet run successfully."
 
 [operations."quit"]
 support = "implemented"
-evidence = "documented"
+evidence = "demo_verified"
+ref = "api-evidence C7"
+note = "Clean-configuration quit verified; on_dirty=save needs a licence (C3)."
 
 [operations."compile"]
 support = "implemented"

@@ -195,11 +195,22 @@ class ComBackend:
             raise BackendError(ErrorCode.NOT_CONNECTED, "Not connected to CANoe.")
 
     def _read(self, name: str, fn: Any) -> Observed[Any]:
-        """Live read on the worker; cached snapshot (with its age) when busy."""
-        epoch_before = self.store.epoch
+        """Live read on the worker; cached snapshot (with its age) when busy.
+
+        The epoch is captured on the worker together with the value. Only the
+        worker bumps the epoch, so it cannot change while ``fn`` runs; reading
+        it again on the caller afterwards could label old data with a newer
+        session (review C1).
+        """
+
+        def on_worker(step: StepContext) -> tuple[Any, int]:
+            self._require_connected()
+            epoch = self.store.epoch
+            return fn(epoch), epoch
+
         try:
-            value = self.worker.call(
-                lambda step: (self._require_connected(), fn(self.store.epoch))[1],
+            value, epoch = self.worker.call(
+                on_worker,
                 wait_s=min(2.0, self.settings.dispatch_timeout_s),
                 step_s=self.settings.quick_step_s,
             )
@@ -210,10 +221,75 @@ class ComBackend:
                     epoch, age, cached = hit
                     return self.store.observed(cached, epoch=epoch, age_s=age)
             raise
-        epoch = self.store.epoch
-        if epoch == epoch_before:
-            self.store.put_cache(name, value, epoch)
+        self.store.put_cache(name, value, epoch)  # ignored if the epoch moved on
         return self.store.observed(value, epoch=epoch)
+
+    def _bump_epoch(self) -> int:
+        """New session state: invalidate IDs and watchers of the old one (review C4)."""
+        epoch = self.store.bump_epoch()
+        self.session.ids.clear()
+        self._seen.clear()
+        for w in list(self._watchers.values()):
+            self._watchers.pop(w.operation_id, None)
+            op = self.store.get(w.operation_id)
+            if op is None or op.state not in (
+                OpState.RUNNING,
+                OpState.STOPPING,
+                OpState.OUTCOME_UNKNOWN,
+            ):
+                continue
+            # The session this operation acted on is gone; its confirming event can
+            # no longer arrive, and events of the new session must not certify it.
+            # Resolve it as failed but say plainly that effects are possible.
+            self.store.finish(
+                w.operation_id,
+                OpState.FAILED,
+                error=ErrorInfo(
+                    ErrorCode.OUTCOME_UNKNOWN,
+                    f"The CANoe session changed (epoch {op.epoch} -> {epoch}) before "
+                    f"{w.kind} was confirmed. It may or may not have taken effect in the "
+                    "old session. Re-read the current state.",
+                    details=(("effects_possible", True),),
+                ),
+            )
+        return epoch
+
+    def _save_with_backup(self, step: StepContext, cfg: Any, target: str | None) -> str | None:
+        """The only overwrite path (review C5). Back up the file that will be
+        overwritten, refuse to save if the backup fails, then save. Returns the
+        backup path, or None when nothing existed to overwrite."""
+        dest = Path(target) if target else Path(str(cfg.FullName))
+        backup = None
+        if dest.exists():
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+            candidate = dest.with_name(f"{dest.name}.bak-{stamp}")
+            n = 1
+            while candidate.exists():
+                candidate = dest.with_name(f"{dest.name}.bak-{stamp}-{n}")
+                n += 1
+            try:
+                shutil.copy2(dest, candidate)
+            except OSError as exc:
+                raise BackendError(
+                    ErrorCode.INTERNAL,
+                    f"Could not back up {dest} before saving ({exc}); nothing was saved.",
+                ) from None
+            backup = str(candidate)
+        if target:
+            self.session.expect_own_open(target)
+            step.dispatch("saving")
+            cfg.Save(target, False)
+        else:
+            step.dispatch("saving")
+            cfg.Save()
+        return backup
+
+    def _refuse_if_measuring(self, action: str) -> None:
+        """Checked before any side effect of a configuration-level action (review C6)."""
+        if bool(self.session.app.Measurement.Running):
+            raise BackendError(
+                ErrorCode.MEASUREMENT_RUNNING, f"Stop the measurement before {action}."
+            )
 
     # ======================================================= worker callbacks
 
@@ -239,7 +315,7 @@ class ComBackend:
         self.store.update_session(
             connected=True, lock_held=True, lock_holder_pid=None, **self.session.session_fields()
         )
-        self.store.bump_epoch()
+        self._bump_epoch()
         return attached
 
     def _disconnect_on_worker(self) -> None:
@@ -269,18 +345,17 @@ class ComBackend:
                 if info is not None and info.code is ErrorCode.NOT_CONNECTED:
                     log.warning("lost CANoe connection")
                     self._disconnect_on_worker()
-                    self.store.bump_epoch()
+                    self._bump_epoch()
 
     def _handle_event(self, name: str, args: tuple[Any, ...]) -> None:
         if name == "App.OnOpen":
             path = args[0] if args else ""
             if not self.session.is_own_open(path):
-                self.store.bump_epoch()
-                self.session.ids.clear()
+                self._bump_epoch()
             self.store.update_session(configuration_path=path or None)
         elif name == "App.OnQuit":
             self._disconnect_on_worker()
-            self.store.bump_epoch()
+            self._bump_epoch()
         elif name == "Meas.OnStart":
             self.store.update_session(measurement_running=True)
             self._seen.add("start")
@@ -294,7 +369,7 @@ class ComBackend:
         if op is None:
             self._watchers.pop(w.operation_id, None)
             return
-        if flag in self._seen:
+        if flag in self._seen and op.epoch == self.store.epoch:
             self._seen.discard(flag)
             self._watchers.pop(w.operation_id, None)
             self.store.finish(w.operation_id, OpState.COMPLETED)
@@ -364,8 +439,9 @@ class ComBackend:
             attached = self._connect_on_worker(step, launch=launch_if_absent)
             app = self.session.app
             cfg = app.Configuration
+            self._refuse_if_measuring("opening a configuration")
             modified = bool(cfg.Modified)  # pre-dispatch dirty check (contract rule 4)
-            saved_to = None
+            saved_to = backup = None
             if modified and on_dirty == "refuse":
                 raise BackendError(
                     ErrorCode.DIRTY_CONFIG,
@@ -374,18 +450,12 @@ class ComBackend:
                     details=(("configuration", str(cfg.FullName)),),
                 )
             if modified and on_dirty == "save":
-                step.dispatch("saving_previous")
-                cfg.Save()
+                backup = self._save_with_backup(step, cfg, None)
                 saved_to = str(cfg.FullName)
-            if bool(app.Measurement.Running):
-                raise BackendError(
-                    ErrorCode.MEASUREMENT_RUNNING, "Stop the measurement before opening."
-                )
             self.session.expect_own_open(path)
             step.dispatch("opening")
             app.Open(path, False, False)
-            epoch = self.store.bump_epoch()
-            self.session.ids.clear()
+            epoch = self._bump_epoch()
             self.store.update_session(**self.session.session_fields())
             return OpenResult(
                 active_path=str(app.Configuration.FullName),
@@ -393,6 +463,7 @@ class ComBackend:
                 discarded_changes=modified and on_dirty == "discard",
                 saved_previous_to=saved_to,
                 epoch_after=epoch,
+                backup_path=backup,
             )
 
         step_s = self.settings.open_step_s + (
@@ -404,23 +475,12 @@ class ComBackend:
         def job(step: StepContext) -> SaveResult:
             self._require_connected()
             cfg = self.session.require_configuration()
+            self._refuse_if_measuring("saving the configuration")
             before = str(cfg.FullName)
-            backup = None
-            if as_path:
-                target = Path(as_path)
-                if target.exists():
-                    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-                    backup = str(target.with_name(f"{target.name}.bak-{stamp}"))
-                    shutil.copy2(target, backup)
-                self.session.expect_own_open(as_path)
-                step.dispatch("saving")
-                cfg.Save(as_path, False)
-            else:
-                step.dispatch("saving")
-                cfg.Save()
+            backup = self._save_with_backup(step, cfg, as_path)
             active = str(self.session.app.Configuration.FullName)
             changed = active.lower() != before.lower()
-            epoch = self.store.bump_epoch() if changed else self.store.epoch
+            epoch = self._bump_epoch() if changed else self.store.epoch
             self.store.update_session(**self.session.cheap_fields())
             return SaveResult(
                 saved_path=as_path or before,
@@ -433,21 +493,26 @@ class ComBackend:
         return self._submit("save_config", job, ctx, step_s=self.settings.save_step_s)
 
     def quit(self, on_dirty: DirtyPolicy, ctx: CallContext) -> OperationStatus:
-        def job(step: StepContext) -> None:
+        def job(step: StepContext) -> SaveResult | None:
             self._require_connected()
             app = self.session.app
-            if bool(app.Configuration.Modified):
+            self._refuse_if_measuring("quitting CANoe")
+            cfg = app.Configuration
+            saved: SaveResult | None = None
+            if bool(cfg.Modified):
                 if on_dirty == "refuse":
                     raise BackendError(
                         ErrorCode.DIRTY_CONFIG, "Unsaved changes; quit refused (on_dirty=refuse)."
                     )
                 if on_dirty == "save":
-                    step.dispatch("saving")
-                    app.Configuration.Save()
+                    path = str(cfg.FullName)
+                    backup = self._save_with_backup(step, cfg, None)
+                    saved = SaveResult(path, path, False, backup, self.store.epoch)
             step.dispatch("quitting")
             app.Quit()
             self._disconnect_on_worker()
-            self.store.bump_epoch()
+            self._bump_epoch()
+            return saved
 
         return self._submit("quit", job, ctx, step_s=self.settings.open_step_s)
 
@@ -483,24 +548,33 @@ class ComBackend:
         discards = False
         overwrites: tuple[str, ...] = ()
         blocked: BlockReason | None = None
-        if request.action == "open_config":
+        saves_first = False
+        if request.action in ("open_config", "quit"):
             on_dirty = params.get("on_dirty", "refuse")
-            launches = not st.connected and bool(params.get("launch_if_absent", True))
+            if request.action == "open_config":
+                launches = not st.connected and bool(params.get("launch_if_absent", True))
             if st.configuration_modified:
                 if on_dirty == "refuse":
                     blocked = BlockReason.MISSING_PREREQUISITE
                     notes.append("The open configuration has unsaved changes; refused.")
                 discards = on_dirty == "discard"
+                saves_first = on_dirty == "save"
+                if saves_first and st.configuration_path:
+                    overwrites = (st.configuration_path,)
+                    notes.append("The configuration is backed up, then saved, first.")
+            if st.measurement_running:
+                blocked = BlockReason.MEASUREMENT_RUNNING
             notes.append(
                 "CANoe tracks most but not all changes as unsaved (Node.Active is not); "
-                "changes it does not track are lost on open."
+                "changes it does not track are lost."
             )
         elif request.action == "save_config":
             as_path = params.get("as_path")
             if isinstance(as_path, str) and Path(as_path).exists():
                 overwrites = (as_path,)
                 notes.append("The existing file is backed up before it is overwritten.")
-        if request.action in ("save_config", "measurement.start") and st.licensed is False:
+        needs_licence = request.action in ("save_config", "measurement.start") or saves_first
+        if needs_licence and st.licensed is False:
             blocked = BlockReason.NO_LICENSE
         if st.degraded:
             blocked = BlockReason.DEGRADED
@@ -555,6 +629,7 @@ class ComBackend:
     ) -> OperationStatus:
         def job(step: StepContext) -> DatabaseInfo:
             self._require_connected()
+            self._refuse_if_measuring("changing a database channel")
             objs = self.session.database_objects()
             entries = self.session.database_entries()
             idx = self.session.ids.resolve("databases", self.store.epoch, entries, database_id)

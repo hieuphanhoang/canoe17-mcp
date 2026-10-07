@@ -387,6 +387,8 @@ class OpenResult:
     discarded_changes: bool
     saved_previous_to: str | None
     epoch_after: int
+    backup_path: str | None = None
+    """Backup of the previous configuration file made before on_dirty="save"."""
 
 
 @dataclass(frozen=True, slots=True)
