@@ -142,7 +142,7 @@ def test_fake_save_copy_switches_active_path_and_epoch() -> None:
     assert isinstance(result.result, c.SaveResult)
     assert result.result.active_path == "copy.cfg"
     assert result.result.epoch_after > epoch
-    assert result.result.backup_path is None  # No filesystem IO in fake.
+    assert result.result.backup_path is None  # A new destination has nothing to back up.
 
 
 def test_gui_change_between_enqueue_and_dispatch_fails_closed() -> None:
@@ -202,7 +202,7 @@ def test_dispatch_timeout_cancels_before_effect_and_queue_cancel_is_final() -> N
     now[0] = 11
     result = fake.operation(op.operation_id).value
     assert result.state == c.OpState.CANCELLED and not result.dispatched
-    assert result.error and result.error.code == c.ErrorCode.BUSY
+    assert result.error and result.error.code == c.ErrorCode.DEADLINE_EXCEEDED
     fake.advance()
     assert not fake.status().connected
     op = fake.connect()
@@ -239,3 +239,79 @@ def test_identifier_escaping(name: str) -> None:
     escaped = c.escape_id_segment(name)
     assert "@" not in escaped and "/" not in escaped
     assert c.unescape_id_segment(escaped) == name
+
+
+def test_diagnostic_qualifier_collisions_are_renamed_without_changing_existing_ids() -> None:
+    fake = backend()
+    for folder, expected in (("first", "Door"), ("second", "Door_1"), ("third", "Door_2")):
+        result = finish(
+            fake, fake.add_diag_description("CAN", f"{folder}/Door.cdd", None, False, context(fake))
+        )
+        assert isinstance(result.result, c.DiagDescriptionInfo)
+        assert result.result.qualifier == expected
+        assert result.result.id == f"diag:{expected}"
+    assert [item.id for item in fake.diag_descriptions().value] == [
+        "diag:Door", "diag:Door_1", "diag:Door_2"
+    ]
+    for network, path in (("CAN", "second/Door.cdd"), ("can", "SECOND/door.CDD")):
+        duplicate = finish(
+            fake, fake.add_diag_description(network, path, None, False, context(fake))
+        )
+        assert duplicate.error and duplicate.error.code == c.ErrorCode.ALREADY_EXISTS
+        assert not duplicate.dispatched
+
+
+@pytest.mark.parametrize("route", ["current", "existing_copy", "open_save", "quit_save"])
+def test_fake_backup_markers_match_preview_overwrites(route: str) -> None:
+    fake = backend(licensed=True)
+    fake.simulate_edit(modified=True)
+    target = "b.cfg" if route == "existing_copy" else "a.cfg"
+    if route in {"current", "existing_copy"}:
+        request = c.EffectRequest("save_config", (("as_path", target),))
+        op = fake.save_config(target, context(fake))
+    elif route == "open_save":
+        request = c.EffectRequest("open_config", (("on_dirty", "save"), ("path", "b.cfg")))
+        op = fake.open_config("b.cfg", "save", False, context(fake))
+    else:
+        request = c.EffectRequest("quit", (("on_dirty", "save"),))
+        op = fake.quit("save", context(fake))
+    assert fake.preview(request).value.overwrites == (target,)
+    done = finish(fake, op)
+    assert isinstance(done.result, (c.SaveResult, c.OpenResult))
+    assert done.result.backup_path == f"{target}.bak-FAKE"
+
+
+@pytest.mark.parametrize("action", ["open_config", "save_config", "quit"])
+def test_measurement_blocks_fake_preview_and_direct_mutation(action: str) -> None:
+    fake = backend(licensed=True)
+    finish(fake, fake.measurement_start(context(fake)))
+    fake.simulate_edit(modified=True)
+    request = c.EffectRequest(action, (("on_dirty", "save"),))
+    assert fake.preview(request).value.blocked_by == c.BlockReason.MEASUREMENT_RUNNING
+    available = {entry.operation: entry for entry in fake.availability().value}
+    assert available[action].blocked_by == c.BlockReason.MEASUREMENT_RUNNING
+    op = {
+        "open_config": lambda: fake.open_config("b.cfg", "save", False, context(fake)),
+        "save_config": lambda: fake.save_config(None, context(fake)),
+        "quit": lambda: fake.quit("save", context(fake)),
+    }[action]()
+    done = finish(fake, op)
+    assert done.error and done.error.code == c.ErrorCode.MEASUREMENT_RUNNING
+    assert not done.dispatched and done.result is None
+    assert fake.status().configuration_path == "a.cfg"
+    assert fake.status().configuration_modified
+    assert fake.status().measurement_running
+
+
+def test_expired_queue_reports_busy_when_another_step_is_active() -> None:
+    now = [0.0]
+    fake = FakeBackend(configurations=(FakeConfiguration("a.cfg"),), clock=lambda: now[0])
+    finish(fake, fake.connect())
+    fake.hold_next_step()
+    fake.compile(context(fake))
+    fake.advance()
+    queued = fake.compile(context(fake))
+    now[0] = 11
+    done = fake.operation(queued.operation_id).value
+    assert done.state == c.OpState.CANCELLED and not done.dispatched
+    assert done.error and done.error.code == c.ErrorCode.BUSY

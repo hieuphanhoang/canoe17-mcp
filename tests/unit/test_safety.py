@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -117,3 +118,61 @@ def test_unlicensed_preview_blocks_licensed_effects(tmp_path: Path, action: str)
         guard.invoke(request, confirm=True, dispatch=fake.compile)
     assert caught.value.code == c.ErrorCode.LICENSE_REQUIRED
     assert len(fake.transitions) == before
+
+
+@pytest.mark.parametrize(
+    ("reason", "code"),
+    [
+        (c.BlockReason.MEASUREMENT_RUNNING, c.ErrorCode.MEASUREMENT_RUNNING),
+        (c.BlockReason.MEASUREMENT_STOPPED, c.ErrorCode.MEASUREMENT_NOT_RUNNING),
+        (c.BlockReason.NOT_CONNECTED, c.ErrorCode.NOT_CONNECTED),
+        (c.BlockReason.NO_CONFIGURATION, c.ErrorCode.NO_CONFIGURATION),
+        (c.BlockReason.LOCKED_BY_OTHER_SERVER, c.ErrorCode.LOCKED_BY_OTHER_SERVER),
+        (c.BlockReason.NO_LICENSE, c.ErrorCode.LICENSE_REQUIRED),
+        (c.BlockReason.DEGRADED, c.ErrorCode.CAPABILITY_UNAVAILABLE),
+        (c.BlockReason.UNSUPPORTED, c.ErrorCode.CAPABILITY_UNAVAILABLE),
+        (c.BlockReason.MISSING_PREREQUISITE, c.ErrorCode.CAPABILITY_UNAVAILABLE),
+    ],
+)
+def test_blocked_preview_preserves_actionable_error_and_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reason: c.BlockReason, code: c.ErrorCode
+) -> None:
+    fake, guard = policy(tmp_path)
+    request = c.EffectRequest("compile")
+    observed = fake.preview(request)
+    monkeypatch.setattr(
+        fake,
+        "preview",
+        lambda _: replace(observed, value=replace(observed.value, blocked_by=reason)),
+    )
+    before = len(fake.transitions)
+    with pytest.raises(c.BackendError) as caught:
+        guard.invoke(request, confirm=True, dispatch=fake.compile)
+    assert caught.value.code == code
+    assert dict(caught.value.info.details)["blocked_by"] == reason.value
+    assert len(fake.transitions) == before
+
+
+@pytest.mark.parametrize("dirty_policy", ["refuse", "discard", "save"])
+def test_quit_outside_roots_only_checks_path_when_saving(
+    tmp_path: Path, dirty_policy: c.DirtyPolicy
+) -> None:
+    fake, guard = policy(tmp_path)
+    fake.simulate_edit(path=str(tmp_path.parent / "outside.cfg"), modified=True)
+    request = c.EffectRequest("quit", (("on_dirty", dirty_policy),))
+    if dirty_policy == "save":
+        with pytest.raises(c.BackendError) as caught:
+            guard.invoke(request, confirm=True, dispatch=lambda ctx: fake.quit(dirty_policy, ctx))
+        assert caught.value.code == c.ErrorCode.PATH_NOT_ALLOWED
+    else:
+        result = guard.invoke(
+            request, confirm=True, dispatch=lambda ctx: fake.quit(dirty_policy, ctx)
+        )
+        assert result.operation is not None
+        done = fake.wait(result.operation.operation_id, 1).value
+        if dirty_policy == "refuse":
+            assert done.error and done.error.code == c.ErrorCode.DIRTY_CONFIG
+            assert not done.dispatched
+        else:
+            assert done.state == c.OpState.COMPLETED
+            assert not fake.status().connected

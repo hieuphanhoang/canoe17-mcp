@@ -3,6 +3,10 @@
 No files are written. Configurations and saves live only in memory. wait()/advance()
 drive the fake queue; there is no STA thread. hold_next_step(), an injected clock,
 and resolve_held() let tests model a blocked RPC and its late outcome without sleep.
+Backup paths ending in .bak-FAKE are synthetic reporting markers for overwrites
+of registered in-memory configurations; they are not files or restorable backups.
+Diagnostic qualifiers default to the file stem (no CDD/ODX parsing); collisions
+are renamed with _1, _2, etc. as in CANoe's D6 evidence.
 Unimplemented extension actions fail closed and advertise NOT_IMPLEMENTED.
 """
 
@@ -153,7 +157,10 @@ class FakeBackend:
                     self._ops[operation_id],
                     c.OpState.CANCELLED,
                     finished_wall=_wall(),
-                    error=c.ErrorInfo(c.ErrorCode.BUSY, "Fake dispatch deadline; never dispatched"),
+                    error=c.ErrorInfo(
+                        c.ErrorCode.BUSY if self._active else c.ErrorCode.DEADLINE_EXCEEDED,
+                        "Fake dispatch deadline; never dispatched",
+                    ),
                 )
                 self._queue.remove(operation_id)
         if self._active is not None:
@@ -318,6 +325,8 @@ class FakeBackend:
             "measurement.stop",
         }:
             return c.BlockReason.NO_LICENSE
+        if self._measurement and action in {"open_config", "save_config", "quit"}:
+            return c.BlockReason.MEASUREMENT_RUNNING
         return None
 
     def availability(self) -> c.Observed[tuple[c.Availability, ...]]:
@@ -387,9 +396,10 @@ class FakeBackend:
                 raise c.BackendError(c.ErrorCode.CANOE_REJECTED, "Unknown fake configuration")
             attached = self._process_running
             old = self._config
-            saved = None
+            saved = backup = None
             if old is not None and old.modified and on_dirty == "save":
                 self._licence()
+                backup = self._backup_marker(old.path)
                 self._configs[old.path] = replace(old, modified=False)
                 saved = old.path
             discarded = old is not None and old.modified and on_dirty == "discard"
@@ -397,22 +407,26 @@ class FakeBackend:
             self._config = replace(self._configs[path], modified=False)
             self._epoch += 1
             self._fingerprints.clear()
-            return c.OpenResult(path, attached, discarded, saved, self._epoch)
+            return c.OpenResult(path, attached, discarded, saved, self._epoch, backup)
 
         return self._submit("open_config", ctx, effect, check)
+
+    def _backup_marker(self, path: str) -> str | None:
+        return f"{path}.bak-FAKE" if path in self._configs else None
 
     def save_config(self, as_path: str | None, ctx: c.CallContext) -> c.OperationStatus:
         def effect() -> c.SaveResult:
             self._licence()
             old = self._need_config()
             target = as_path or old.path
+            backup = self._backup_marker(target)
             changed = target != old.path
             self._config = replace(old, path=target, modified=False)
             self._configs[target] = self._config
             if changed:
                 self._epoch += 1
                 self._fingerprints.clear()
-            return c.SaveResult(target, target, changed, None, self._epoch)
+            return c.SaveResult(target, target, changed, backup, self._epoch)
 
         return self._submit("save_config", ctx, effect, self._stopped)
 
@@ -421,12 +435,16 @@ class FakeBackend:
             self._need_config()
             self._dirty_check(on_dirty)
 
-        def effect() -> None:
+        def effect() -> c.SaveResult | None:
+            saved = None
             if self._config is not None and self._config.modified and on_dirty == "save":
-                self._configs[self._config.path] = replace(self._config, modified=False)
+                path = self._config.path
+                saved = c.SaveResult(path, path, False, self._backup_marker(path), self._epoch)
+                self._configs[path] = replace(self._config, modified=False)
             self._connected = self._process_running = False
             self._epoch += 1
             self._fingerprints.clear()
+            return saved
 
         return self._submit("quit", ctx, effect, check)
 
@@ -467,12 +485,19 @@ class FakeBackend:
         config = self._config
         dirty = config.modified if config else None
         block = self._block(request.action)
-        if params.get("on_dirty") == "save" and dirty and not self._licensed:
+        saves_first = (
+            request.action in {"open_config", "quit"}
+            and params.get("on_dirty") == "save"
+            and dirty
+        )
+        if saves_first and not self._licensed and block != c.BlockReason.DEGRADED:
             block = c.BlockReason.NO_LICENSE
         overwrites = ()
         if request.action == "save_config":
             path = params.get("as_path") or (config.path if config else None)
-            overwrites = (path,) if isinstance(path, str) else ()
+            overwrites = (path,) if isinstance(path, str) and path in self._configs else ()
+        elif saves_first and config is not None:
+            overwrites = (config.path,)
         return self._observed(
             c.EffectPreview(
                 request.action,
@@ -612,7 +637,8 @@ class FakeBackend:
             if Path(path).suffix.lower() == ".cdd" and ecu_identifier is not None:
                 raise c.BackendError(c.ErrorCode.INVALID_ARGUMENT, "CDD forbids ecu_identifier")
             if any(
-                item.network == network and item.file_path == path
+                item.network.casefold() == network.casefold()
+                and str(Path(item.file_path)).casefold() == str(Path(path)).casefold()
                 for item in self._need_config().diagnostics
             ):
                 raise c.BackendError(c.ErrorCode.ALREADY_EXISTS, "Description already loaded")
@@ -620,20 +646,17 @@ class FakeBackend:
         def effect() -> c.DiagDescriptionInfo:
             config = self._need_config()
             qualifier = ecu_identifier or Path(path).stem
+            existing = {entry.qualifier for entry in config.diagnostics}
+            base = qualifier
+            suffix = 1
+            while qualifier in existing:
+                qualifier = f"{base}_{suffix}"
+                suffix += 1
             item = c.DiagDescriptionInfo(
                 "diag:" + c.escape_id_segment(qualifier), qualifier, network, None, path, "tester"
             )
-            items = config.diagnostics + (item,)
-            counts: dict[str, int] = {}
-            normalized = []
-            for entry in items:
-                base = "diag:" + c.escape_id_segment(entry.qualifier)
-                if sum(d.qualifier == entry.qualifier for d in items) > 1:
-                    counts[base] = counts.get(base, 0) + 1
-                    base += f"@{counts[base]}"
-                normalized.append(replace(entry, id=base))
-            self._config = replace(config, modified=True, diagnostics=tuple(normalized))
-            return normalized[-1]
+            self._config = replace(config, modified=True, diagnostics=config.diagnostics + (item,))
+            return item
 
         return self._submit("diag_description.add", ctx, effect, check)
 

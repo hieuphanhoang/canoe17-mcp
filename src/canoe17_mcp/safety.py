@@ -85,8 +85,9 @@ class SafetyPolicy:
             for value in preview.overwrites:
                 self.allowed_path(value)
             # Current-configuration mutations have an implicit target too.
-            # Opening is allowed to leave an out-of-root config, but cannot save it.
-            if request.action not in {"connect", "open_config"} or params.get("on_dirty") == "save":
+            # Open/quit may leave an out-of-root config, but cannot save it.
+            saves_current = params.get("on_dirty") == "save"
+            if request.action not in {"connect", "open_config", "quit"} or saves_current:
                 if preview.configuration_path is not None:
                     self.allowed_path(preview.configuration_path)
 
@@ -127,12 +128,18 @@ class SafetyPolicy:
             if not confirm:
                 return PolicyResult(preview)
             if preview.value.blocked_by is not None:
-                code = (
-                    c.ErrorCode.LICENSE_REQUIRED
-                    if preview.value.blocked_by == c.BlockReason.NO_LICENSE
-                    else c.ErrorCode.CAPABILITY_UNAVAILABLE
+                reason = preview.value.blocked_by
+                code = {
+                    c.BlockReason.MEASUREMENT_RUNNING: c.ErrorCode.MEASUREMENT_RUNNING,
+                    c.BlockReason.MEASUREMENT_STOPPED: c.ErrorCode.MEASUREMENT_NOT_RUNNING,
+                    c.BlockReason.NOT_CONNECTED: c.ErrorCode.NOT_CONNECTED,
+                    c.BlockReason.NO_CONFIGURATION: c.ErrorCode.NO_CONFIGURATION,
+                    c.BlockReason.LOCKED_BY_OTHER_SERVER: c.ErrorCode.LOCKED_BY_OTHER_SERVER,
+                    c.BlockReason.NO_LICENSE: c.ErrorCode.LICENSE_REQUIRED,
+                }.get(reason, c.ErrorCode.CAPABILITY_UNAVAILABLE)
+                raise c.BackendError(
+                    code, f"Preview blocked: {reason}", details=(("blocked_by", reason.value),)
                 )
-                raise c.BackendError(code, f"Preview blocked: {preview.value.blocked_by}")
             # Do not replace preview.epoch with backend.status().epoch here.
             operation = dispatch(c.CallContext(expected_epoch=preview.epoch, wait_s=wait))
             del self._previews[request]
