@@ -559,8 +559,6 @@ class ComBackend:
                 if saves_first and st.configuration_path:
                     overwrites = (st.configuration_path,)
                     notes.append("The configuration is backed up, then saved, first.")
-            if st.measurement_running:
-                blocked = BlockReason.MEASUREMENT_RUNNING
             notes.append(
                 "CANoe tracks most but not all changes as unsaved (Node.Active is not); "
                 "changes it does not track are lost."
@@ -574,6 +572,10 @@ class ComBackend:
         needs_licence = request.action in ("save_config", "measurement.start") or saves_first
         if needs_licence and st.licensed is False:
             blocked = BlockReason.NO_LICENSE
+        if st.measurement_running and request.action in ("open_config", "quit", "save_config"):
+            # The jobs refuse these first, before any side effect (C6); the preview
+            # reports the same reason, ahead of the licence (review C9).
+            blocked = BlockReason.MEASUREMENT_RUNNING
         if st.degraded:
             blocked = BlockReason.DEGRADED
         preview = EffectPreview(

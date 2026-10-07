@@ -260,3 +260,17 @@ def test_dirty_save_preview_shows_licence_block(backend: ComBackend, action: str
     assert pv.value.overwrites == ("C:/x/Demo.cfg",)
     discard = backend.preview(EffectRequest(action, (("on_dirty", "discard"),)))
     assert discard.value.blocked_by is None and discard.value.discards_changes
+
+
+# C9 -------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("action", ["open_config", "quit", "save_config"])
+@pytest.mark.parametrize("licensed", [True, False])
+def test_preview_blocks_while_measuring(backend: ComBackend, action: str, licensed: bool):
+    backend.store.update_session(
+        connected=True, licensed=licensed, measurement_running=True,
+        configuration_modified=True, configuration_path="C:/demo/a.cfg",
+    )
+    pv = backend.preview(EffectRequest(action, (("on_dirty", "save"),)))
+    assert pv.value.blocked_by is BlockReason.MEASUREMENT_RUNNING
