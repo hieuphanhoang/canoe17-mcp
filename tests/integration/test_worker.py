@@ -84,12 +84,11 @@ def test_step_deadline_gives_outcome_unknown_then_late_resolution(worker):
     st = worker.store.status()
     assert st.busy_with == op.operation_id and st.degraded
     # new mutations are refused while degraded, without dispatch
-    refused = worker.submit_operation(
-        "compile", lambda step: None, expected_epoch=0, step_s=1, dispatch_timeout_s=1
-    )
-    refused = worker.store.get(refused.operation_id)
-    assert refused.state is OpState.CANCELLED
-    assert refused.error.code is ErrorCode.CAPABILITY_UNAVAILABLE
+    with pytest.raises(BackendError) as refused:
+        worker.submit_operation(
+            "compile", lambda step: None, expected_epoch=0, step_s=1, dispatch_timeout_s=1
+        )
+    assert refused.value.code is ErrorCode.CAPABILITY_UNAVAILABLE
     release.set()
     deadline = time.monotonic() + 2
     while worker.store.get(op.operation_id).state is OpState.OUTCOME_UNKNOWN:

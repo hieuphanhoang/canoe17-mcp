@@ -184,11 +184,12 @@ class StaWorker:
         mutating: bool = True,
     ) -> OperationStatus:
         """Queue an operation and return its QUEUED status at once."""
+        if mutating and self.store.degraded:
+            # Refused before anything is queued: raise, no operation is created
+            # (contract rule 2). A job queued earlier is refused when it starts.
+            raise BackendError.from_info(DEGRADED_ERROR)
         epoch = self.store.epoch if expected_epoch is None else expected_epoch
         op = self.store.new_operation(kind, epoch)
-        if mutating and self.store.degraded:
-            self.store.cancel_queued(op.operation_id, DEGRADED_ERROR)
-            return self.store.get(op.operation_id) or op
         job = Job(
             fn=fn,
             step_s=step_s,

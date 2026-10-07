@@ -179,16 +179,12 @@ class ComBackend:
         )
 
     def _not_implemented(self, kind: OperationKind) -> OperationStatus:
-        op = self.store.new_operation(kind, self.store.epoch)
-        self.store.cancel_queued(
-            op.operation_id,
-            ErrorInfo(
-                ErrorCode.CAPABILITY_UNAVAILABLE,
-                f"{kind} is not implemented in this backend yet.",
-                details=(("blocked_by", BlockReason.UNSUPPORTED.value),),
-            ),
+        """Refused synchronously; no operation is created (contract rule 2)."""
+        raise BackendError(
+            ErrorCode.CAPABILITY_UNAVAILABLE,
+            f"{kind} is not implemented in this backend yet.",
+            details=(("blocked_by", BlockReason.UNSUPPORTED.value),),
         )
-        return self.store.get(op.operation_id) or op
 
     def _require_connected(self) -> None:
         if not self.session.connected:
@@ -555,8 +551,9 @@ class ComBackend:
                 launches = not st.connected and bool(params.get("launch_if_absent", True))
             if st.configuration_modified:
                 if on_dirty == "refuse":
-                    blocked = BlockReason.MISSING_PREREQUISITE
-                    notes.append("The open configuration has unsaved changes; refused.")
+                    # Not a block: the backend's own pre-dispatch check refuses with the
+                    # precise DIRTY_CONFIG code, without dispatching anything.
+                    notes.append("The open configuration has unsaved changes; it will be refused.")
                 discards = on_dirty == "discard"
                 saves_first = on_dirty == "save"
                 if saves_first and st.configuration_path:
@@ -570,8 +567,9 @@ class ComBackend:
             )
         elif request.action == "save_config":
             as_path = params.get("as_path")
-            if isinstance(as_path, str) and Path(as_path).exists():
-                overwrites = (as_path,)
+            target = as_path if isinstance(as_path, str) else st.configuration_path
+            if target and Path(target).exists():
+                overwrites = (target,)
                 notes.append("The existing file is backed up before it is overwritten.")
         needs_licence = request.action in ("save_config", "measurement.start") or saves_first
         if needs_licence and st.licensed is False:

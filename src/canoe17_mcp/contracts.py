@@ -27,8 +27,11 @@ Rules every backend follows
    preview's epoch.
 2. **Every mutation is an operation.** Mutating methods return an
    :class:`OperationStatus` at once (test runs and diagnostic requests return
-   their domain status, which carries the operation_id); :meth:`Backend.wait` waits on the state
-   store (never on the worker) up to the caller's timeout. ``BUSY`` and
+   their domain status, which carries the operation_id). A refusal decided
+   before anything is queued (degraded backend, not implemented, invalid
+   argument) raises ``BackendError`` and creates no operation.
+   :meth:`Backend.wait` waits on the state store (never on the worker) up to
+   the caller's timeout. ``BUSY`` and
    ``DEADLINE_EXCEEDED`` mean the job was never dispatched and has been
    cancelled atomically. Once a COM call with side effects is dispatched, an
    expired step deadline gives ``OUTCOME_UNKNOWN``: the operation stays
