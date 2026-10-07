@@ -26,7 +26,8 @@ Rules every backend follows
    no earlier snapshot, the policy computes the preview first and uses the
    preview's epoch.
 2. **Every mutation is an operation.** Mutating methods return an
-   :class:`OperationStatus` at once; :meth:`Backend.wait` waits on the state
+   :class:`OperationStatus` at once (test runs and diagnostic requests return
+   their domain status, which carries the operation_id); :meth:`Backend.wait` waits on the state
    store (never on the worker) up to the caller's timeout. ``BUSY`` and
    ``DEADLINE_EXCEEDED`` mean the job was never dispatched and has been
    cancelled atomically. Once a COM call with side effects is dispatched, an
@@ -41,7 +42,8 @@ Rules every backend follows
    the same job as the ``Open``). CANoe 17.6 does not refuse
    ``Open(path, False, False)`` on a modified configuration; it discards the
    changes (api-evidence C2). Any failure of a dispatched call is
-   ``CANOE_REJECTED`` with its HRESULT. ``Modified`` does not cover every
+   ``CANOE_REJECTED`` with its HRESULT, unless positively identified as
+   ``LICENSE_REQUIRED`` (description text, api-evidence C3/M1; HRESULT kept). ``Modified`` does not cover every
    change (api-evidence C5), so the dirty check is necessary, not sufficient.
 """
 

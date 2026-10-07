@@ -33,6 +33,7 @@ the help says. Each row names its evidence level:
 | C4 | `CAPL.Compile()` then `CAPL.CompileResult` | Works unlicensed, 0.39 s on UDSBasic; `result == 0`, empty message and node | demo_verified | Compile is available without a licence |
 | C5 | `Node.Active` toggled through COM | `Configuration.Modified` stays `False` | demo_verified | `Modified` does not cover every change. Dirty check is necessary but not sufficient |
 | D1 | `DiagDescriptions.Add(network, cddPath)` with a CDD whose qualifier is already loaded | **Succeeds** and adds a second `Door`; sets `Modified`. The help says it fails | demo_verified | `diag:` IDs need the `@n` suffix too; the backend refuses a duplicate itself |
+| D6 | `DiagDescriptions.Add` with a *different* CDD file whose ECU qualifier is already loaded | Succeeds; CANoe renames the new description's qualifier to `Door_1` | demo_verified | Only the same file added twice produces true duplicates (D1), which the backend refuses |
 | D2 | `DiagDescriptions.Add` return value | An `IDiagDescription`; `Mode == 1` (send only / tester), `Node == ""` | demo_verified | Added descriptions start as tester descriptions |
 | D3 | `DiagDescriptions.Remove(index)` | Works by 1-based index | demo_verified | Remove by resolved index, after re-reading the list |
 | D4 | `DiagDescription.Mode`, `OpenWindows(1)`, `CloseWindows()` | Work only late-bound; missing from the early-bound 17.6 type library | demo_verified | Backend uses late binding for these members |
@@ -51,8 +52,11 @@ the help says. Each row names its evidence level:
 | EXCEPINFO description | `Function is only available with valid application license.` |
 | EXCEPINFO scode | `0x8000FFFF` (`E_UNEXPECTED`) |
 
-The scode is generic, so the backend classifies by the description text and the
-source, and reports `missing_prerequisite` with detail `licence`.
+The scode is generic, so the backend classifies by the description text and
+reports `ErrorCode.LICENSE_REQUIRED` (keeping the HRESULT), sets
+`SessionStatus.licensed = False`, and availability reports
+`BlockReason.NO_LICENSE`. This positive identification takes precedence over
+the general rule that a dispatched failure is `canoe_rejected`.
 
 ## Not yet verified
 

@@ -1,0 +1,92 @@
+# Evidence per backend operation. Reviewed data: change a level only from a
+# probe result recorded in docs/com/api-evidence.md and reviewed by the other
+# member. support: implemented | not_implemented | unsupported_by_canoe
+# evidence: documented | demo_verified | bench_verified
+
+[operations."connect"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence A1-A3"
+
+[operations."open_config"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence A4, C1, C2"
+note = "Launch and open verified; on_dirty=save needs a licence (C3)."
+
+[operations."save_config"]
+support = "implemented"
+evidence = "documented"
+ref = "api-evidence C3"
+note = "Licence-gated; not yet run successfully."
+
+[operations."quit"]
+support = "implemented"
+evidence = "documented"
+
+[operations."compile"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence C4"
+
+[operations."summary"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence U1, T1, D2"
+
+[operations."database.list"]
+support = "implemented"
+evidence = "documented"
+note = "Read path exercised on UDSBasic, which has no databases."
+
+[operations."database.set_channel"]
+support = "implemented"
+evidence = "documented"
+
+[operations."diag_description.list"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence D2, D4, D5"
+
+[operations."diag_description.add"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence D1, D2"
+
+[operations."diag_description.remove"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence D3"
+
+[operations."diag_description.open_windows"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence D4"
+
+[operations."diag_description.close_windows"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence D4"
+
+[operations."measurement.start"]
+support = "implemented"
+evidence = "documented"
+ref = "api-evidence M1"
+note = "Licence-gated on the demo PC."
+
+[operations."measurement.stop"]
+support = "implemented"
+evidence = "documented"
+
+[operations."write_window.read"]
+support = "implemented"
+evidence = "documented"
+
+[operations."write_window.clear"]
+support = "implemented"
+evidence = "documented"
+
+[operations."test_setup.list"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence T1, T2"
