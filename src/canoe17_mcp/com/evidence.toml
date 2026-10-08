@@ -1,0 +1,178 @@
+# Evidence per backend operation. Reviewed data: change a level only from a
+# probe result recorded in the api-evidence notes and reviewed by the other
+# member. support: implemented | not_implemented | unsupported_by_canoe
+# evidence: documented | demo_verified | bench_verified
+
+[operations."connect"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence A1-A3"
+
+[operations."open_config"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence A4, C1, C2"
+note = "Launch and open verified; on_dirty=save needs a licence (C3)."
+
+[operations."save_config"]
+support = "implemented"
+evidence = "documented"
+ref = "api-evidence C3"
+note = "Licence-gated; not yet run successfully."
+
+[operations."quit"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence C7"
+note = "Clean-configuration quit verified; on_dirty=save needs a licence (C3)."
+
+[operations."compile"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence C4"
+
+[operations."summary"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence U1, T1, D2"
+
+[operations."database.list"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence N3"
+
+[operations."database.set_channel"]
+support = "implemented"
+evidence = "documented"
+
+[operations."diag_description.list"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence D2, D4, D5"
+
+[operations."diag_description.add"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence D1, D2"
+
+[operations."diag_description.remove"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence D3"
+
+[operations."diag_description.open_windows"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence D4"
+
+[operations."diag_description.close_windows"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence D4"
+
+[operations."measurement.start"]
+support = "implemented"
+evidence = "documented"
+ref = "api-evidence M1"
+note = "Licence-gated on the demo PC."
+
+[operations."measurement.stop"]
+support = "implemented"
+evidence = "documented"
+
+[operations."write_window.read"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence W1"
+
+[operations."write_window.clear"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence W1"
+
+[operations."test_setup.list"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence T1, T2"
+
+[operations."database.add"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence N3"
+
+[operations."database.remove"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence N3"
+
+[operations."bus.list"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence B2"
+
+[operations."bus.add"]
+support = "not_implemented"
+evidence = "demo_verified"
+ref = "api-evidence B1"
+note = "Buses.Remove removed nothing in CANoe 17; add/remove withheld."
+
+[operations."bus.remove"]
+support = "not_implemented"
+evidence = "demo_verified"
+ref = "api-evidence B1"
+
+[operations."node.list"]
+support = "implemented"
+evidence = "demo_verified"
+
+[operations."node.add"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence N1"
+
+[operations."node.remove"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence N1"
+
+[operations."node.set_active"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence N2"
+note = "Does not mark the configuration modified (C5)."
+
+[operations."node.attach_bus"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence N1"
+
+[operations."node.detach_bus"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence N1"
+
+[operations."can_controller.read"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence K1"
+
+[operations."can_controller.set_bitrate"]
+support = "not_implemented"
+evidence = "demo_verified"
+ref = "api-evidence K2"
+note = "Baudrate writes read back inconsistent values."
+
+[operations."test_setup.add_environment"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence T3"
+
+[operations."test_setup.add_module"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence T4"
+
+[operations."test_setup.set_enabled"]
+support = "implemented"
+evidence = "demo_verified"
+ref = "api-evidence T4"

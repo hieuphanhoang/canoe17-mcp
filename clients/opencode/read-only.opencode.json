@@ -1,0 +1,24 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "ollama/qwen3:8b",
+  "provider": {
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama (local)",
+      "options": {"baseURL": "http://127.0.0.1:11434/v1"},
+      "models": {"qwen3:8b": {"name": "Qwen 3 8B (local)"}}
+    }
+  },
+  "mcp": {
+    "canoe17": {
+      "type": "local",
+      "command": ["uv", "--directory", "C:/Bench/canoe17-mcp", "run", "--frozen", "--no-sync", "canoe17-mcp", "--config", "C:/Bench/settings/read-only.toml"],
+      "enabled": true,
+      "timeout": 60000,
+      "environment": {
+        "CANOE17_MCP_READ_ONLY": "true",
+        "CANOE17_MCP_LOCK_KEY": "default"
+      }
+    }
+  }
+}

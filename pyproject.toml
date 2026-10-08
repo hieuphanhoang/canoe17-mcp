@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "canoe17-mcp"
+version = "0.1.0"
+description = "CANoe 17 stdio MCP server with safety policy and explicit COM or fake backend"
+requires-python = ">=3.12"
+dependencies = [
+    "jsonschema>=4.26.0",
+    "mcp>=1.26,<2",
+]
+
+[project.scripts]
+canoe17-mcp = "canoe17_mcp.server:main"
+
+[project.optional-dependencies]
+com = [
+    "pywin32>=312 ; sys_platform == 'win32'",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/canoe17_mcp"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"contracts/tools.json" = "canoe17_mcp/schemas/tools.json"
+
+[tool.pytest.ini_options]
+markers = ["canoe: opt-in tests requiring a real CANoe installation"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pyright]
+include = ["src"]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+venvPath = "."
+venv = ".venv"
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.414",
+    "pytest>=9.1.1",
+    "pywin32>=312 ; sys_platform == 'win32'",
+    "ruff>=0.16.10",
+]

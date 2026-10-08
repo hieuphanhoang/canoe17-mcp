@@ -1,0 +1,10 @@
+[mcp_servers.canoe17]
+command = "uv"
+args = ["--directory", "C:/Bench/canoe17-mcp", "run", "--frozen", "--no-sync", "canoe17-mcp", "--config", "C:/Bench/settings/write.toml"]
+startup_timeout_sec = 30
+tool_timeout_sec = 60
+
+[mcp_servers.canoe17.env]
+CANOE17_MCP_READ_ONLY = "false"
+CANOE17_MCP_ALLOWED_ROOTS = '["C:/Bench/projects"]'
+CANOE17_MCP_LOCK_KEY = "default"
