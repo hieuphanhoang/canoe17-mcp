@@ -22,7 +22,7 @@ from mcp import types
 from mcp.server.fastmcp import FastMCP
 
 from . import contracts as c
-from .audit import AuditLog, Ticket
+from .audit import AuditLog
 from .catalogue import Catalogue
 from .safety import SafetyPolicy
 from .settings import Settings, load_settings
@@ -277,17 +277,48 @@ class ToolService:
     def invoke(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         args, write = self.catalogue.validate(name, arguments)
         ticket = None
-        if write and args["confirm"]:
+        audit_attempted = False
+
+        def start_audit(preview: c.Observed[c.EffectPreview] | None = None) -> None:
+            nonlocal ticket, audit_attempted
+            if not write or not args["confirm"]:
+                return
+            paths = {}
+            configuration_path = None
+            if preview is not None:
+                for key in ("path", "as_path", "capl_path", "tse_path", "can_path", "xml_path"):
+                    if key in args:
+                        paths[key] = self.policy.allowed_path(args[key])
+                if preview.value.configuration_path is not None:
+                    try:
+                        configuration_path = self.policy.allowed_path(
+                            preview.value.configuration_path
+                        )
+                    except c.BackendError:
+                        # Open/quit/cancel may leave a configuration outside allowed roots.
+                        configuration_path = "[redacted]"
+            audit_attempted = True
             try:
-                ticket = self.audit.begin(name, args, self.settings.backend_kind)
+                ticket = self.audit.begin(
+                    name, args, self.settings.backend_kind,
+                    validated_paths=paths, configuration_path=configuration_path,
+                )
             except OSError as exc:
                 raise c.BackendError(
                     c.ErrorCode.CAPABILITY_UNAVAILABLE,
                     "Audit log unavailable; no effect dispatched",
                 ) from exc
+
+        def accepted(operation: c.OperationStatus) -> None:
+            if ticket is not None:
+                self.audit.finish(ticket, {"operation": plain(operation)})
+
         try:
-            payload = self._invoke(name, args, write, ticket)
+            payload = self._invoke(name, args, write, start_audit, accepted)
         except Exception as exc:
+            if write and args["confirm"] and not audit_attempted:
+                # Refusal before a usable preview: do not persist unvalidated paths.
+                start_audit()
             if ticket is not None:
                 self.audit.finish_error(ticket, exc)
             raise
@@ -304,7 +335,9 @@ class ToolService:
         return payload
 
     def _invoke(
-        self, name: str, args: dict[str, Any], write: bool, ticket: Ticket | None
+        self, name: str, args: dict[str, Any], write: bool,
+        before_dispatch: Callable[[c.Observed[c.EffectPreview]], None],
+        accepted: Callable[[c.OperationStatus], None],
     ) -> dict[str, Any]:
         action = args.get("action", next(iter(self.catalogue.tools[name]["actions"])))
         if name not in self.actions or action not in self.actions[name]:
@@ -316,7 +349,9 @@ class ToolService:
             result = self._read(name, args)
         else:
             if name == "canoe_operation":
-                result = self.policy.cancel_operation(args["operation_id"], confirm=args["confirm"])
+                result = self.policy.cancel_operation(
+                    args["operation_id"], confirm=args["confirm"], before_dispatch=before_dispatch,
+                )
             else:
                 params, dispatch = self._mutation(name, action, args)
                 operation = self.actions[name][action]
@@ -326,10 +361,10 @@ class ToolService:
                     confirm=args["confirm"],
                     dispatch=dispatch,
                     wait_s=0,
+                    before_dispatch=before_dispatch,
                 )
                 if result.operation is not None:
-                    if ticket is not None:
-                        self.audit.finish(ticket, {"operation": plain(result.operation)})
+                    accepted(result.operation)
                     observed = self.backend.wait(
                         result.operation.operation_id, self.settings.wait_seconds(None)
                     )

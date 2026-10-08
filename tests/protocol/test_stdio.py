@@ -157,8 +157,21 @@ async def test_stdio_new_edits_and_audit(tmp_path: Path) -> None:
         })
         assert payload(controller)["result"]["value"]["bitrate_bps"] == 500_000
     text = (tmp_path / "audit.jsonl").read_text()
-    assert "secret" not in text
     rows = [json.loads(line) for line in text.splitlines()]
+    attempts = [row for row in rows if row["result"]["state"] == "attempt"]
+    added_record = next(
+        row for row in attempts if row["tool"] == "canoe_node" and row["params"]["action"] == "add"
+    )
+    assert added_record["params"]["name"] == "[redacted]"
+    assert added_record["params"]["bus"] == "CAN"
+    assert added_record["configuration_path"] == str(tmp_path / "demo.cfg")
+    removed_record = next(
+        row for row in attempts
+        if row["tool"] == "canoe_node" and row["params"]["action"] == "remove"
+    )
+    assert removed_record["params"]["node_id"] == node["id"]
+    setup_record = next(row for row in attempts if row["tool"] == "canoe_test_setup")
+    assert setup_record["params"]["tse_path"] == str(tmp_path / "Test.tse")
     assert {row["tool"] for row in rows} == {
         "canoe_open_config", "canoe_node", "canoe_test_setup",
     }

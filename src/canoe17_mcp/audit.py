@@ -1,7 +1,8 @@
-"""Bounded mutation journal; payloads, paths, names and error text are never logged."""
+"""Bounded mutation journal with explicit selectors and policy-validated paths."""
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import os
@@ -10,13 +11,24 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
-from typing import Any
+from typing import Any, BinaryIO
 from uuid import uuid4
 
 from . import contracts as c
 from .settings import Settings
 
 log = logging.getLogger(__name__)
+_LOCK_WAIT_S = 10.0
+_LOCK_RETRY_S = 0.05
+_TEXT_SELECTORS = frozenset({
+    "action", "database_id", "node_id", "environment_id", "module_id", "operation_id",
+    "qualifier", "bus", "network", "window", "section", "on_dirty",
+})
+_PATH_FIELDS = frozenset({"path", "as_path", "capl_path", "tse_path", "can_path", "xml_path"})
+_SCALAR_CONTROLS = frozenset({
+    "confirm", "channel", "active", "enabled", "open_console", "launch_if_absent",
+    "timeout_s", "wait", "bitrate_bps",
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +38,7 @@ class Ticket:
     params: dict[str, Any]
     backend: str
     started: float
+    configuration_path: str | None
 
 
 class AuditLog:
@@ -36,12 +49,35 @@ class AuditLog:
         self._lock = RLock()
         self._pending: dict[str, tuple[Ticket, dict[str, Any] | None]] = {}
 
+    @staticmethod
+    def _acquire_lock(guard: BinaryIO) -> None:
+        deadline = time.monotonic() + _LOCK_WAIT_S
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(guard.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(guard.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return
+            except OSError as exc:
+                if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise OSError("Audit append lock wait expired") from exc
+                time.sleep(min(_LOCK_RETRY_S, remaining))
+
     def _append(self, ticket: Ticket, result: dict[str, Any]) -> None:
         record = {
             "time": datetime.now(UTC).isoformat(), "tool": ticket.tool,
             "params": ticket.params, "result": result,
             "duration": max(0, time.monotonic() - ticket.started),
             "call_id": ticket.id, "backend": ticket.backend,
+            "configuration_path": ticket.configuration_path,
         }
         data = (json.dumps(record, separators=(",", ":"), allow_nan=False) + "\n").encode()
         if len(data) > self.max_bytes:
@@ -54,14 +90,7 @@ class AuditLog:
                 guard.write(b"0")
                 guard.flush()
             guard.seek(0)
-            if os.name == "nt":
-                import msvcrt
-
-                msvcrt.locking(guard.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(guard.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self._acquire_lock(guard)
             try:
                 if self.path.exists() and self.path.stat().st_size + len(data) > self.max_bytes:
                     if self.backup_count:
@@ -78,19 +107,34 @@ class AuditLog:
                     os.fsync(handle.fileno())
             finally:
                 if os.name == "nt":
+                    import msvcrt
+
                     msvcrt.locking(guard.fileno(), msvcrt.LK_UNLCK, 1)
                 else:
+                    import fcntl
+
                     fcntl.flock(guard.fileno(), fcntl.LOCK_UN)
 
-    def begin(self, tool: str, args: dict[str, Any], backend: str) -> Ticket:
+    def begin(
+        self, tool: str, args: dict[str, Any], backend: str, *,
+        validated_paths: dict[str, str] | None = None,
+        configuration_path: str | None = None,
+    ) -> Ticket:
         # Schema-known scalar controls are useful; caller-supplied text can hold secrets.
         params = {
-            key: value if type(value) in {bool, int, float} or value is None else "[redacted]"
+            key: value if key in _SCALAR_CONTROLS and (
+                type(value) in {bool, int, float} or value is None
+            ) else "[redacted]"
             for key, value in args.items()
         }
-        if "action" in args:
-            params["action"] = args["action"]  # Closed, validated enum.
-        ticket = Ticket(uuid4().hex, tool, params, backend, time.monotonic())
+        for key in _TEXT_SELECTORS & args.keys():
+            if isinstance(args[key], str):
+                params[key] = args[key]
+        # Only the policy supplies resolved, allowed-root-validated path values.
+        for key, value in (validated_paths or {}).items():
+            if key in _PATH_FIELDS and key in args:
+                params[key] = value
+        ticket = Ticket(uuid4().hex, tool, params, backend, time.monotonic(), configuration_path)
         with self._lock:
             if len(self._pending) >= 128:
                 raise OSError("Poll outstanding operations before issuing more mutations")

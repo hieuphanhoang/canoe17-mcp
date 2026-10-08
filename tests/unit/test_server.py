@@ -491,3 +491,60 @@ def test_audit_failed_outcome_can_be_recovered_by_polling(
     rows = [json.loads(line) for line in service.settings.audit_path.read_text().splitlines()]
     assert rows[-1]["result"]["state"] == "completed"
     assert not service.audit._pending
+
+
+def test_audit_attempt_identifies_configuration_and_validated_edit(service: ToolService) -> None:
+    root = service.settings.allowed_roots[0]
+    source = str(root / "nested" / ".." / "New.dbc")
+    service.invoke("canoe_database", {
+        "action": "add", "path": source, "bus": "CAN", "channel": 2, "confirm": True,
+    })
+    service.invoke("canoe_database", {
+        "action": "set_channel", "database_id": "db:New", "channel": 1, "confirm": True,
+    })
+    service.invoke("canoe_node", {
+        "action": "add", "name": "private-name", "bus": "CAN",
+        "capl_path": str(root / "source.can"), "confirm": True,
+    })
+    rows = [json.loads(line) for line in service.settings.audit_path.read_text().splitlines()]
+    attempts = [row for row in rows if row["result"]["state"] == "attempt"]
+    assert all(row["configuration_path"] == str(root / "demo.cfg") for row in attempts)
+    assert attempts[0]["params"]["path"] == str(root / "New.dbc")
+    assert attempts[0]["params"]["bus"] == "CAN"
+    assert attempts[1]["params"]["database_id"] == "db:New"
+    assert attempts[2]["params"]["capl_path"] == str(root / "source.can")
+    assert attempts[2]["params"]["name"] == "[redacted]"
+    assert "private-name" not in service.settings.audit_path.read_text()
+
+
+def test_audit_uses_saved_preview_configuration_and_redacts_foreign_paths(
+    service: ToolService,
+) -> None:
+    root = service.settings.allowed_roots[0]
+    args = {"action": "set_channel", "database_id": "db:Demo", "channel": 2}
+    service.invoke("canoe_database", args)
+    assert isinstance(service.backend, FakeBackend)
+    other = str(root / "other.cfg")
+    service.backend._configs[other] = FakeConfiguration(other)
+    service.backend.simulate_gui_open(other)
+    result = service.invoke("canoe_database", {**args, "confirm": True})
+    assert result["result"]["operation"]["error"]["code"] == "stale_session"
+    rows = [json.loads(line) for line in service.settings.audit_path.read_text().splitlines()]
+    assert rows[0]["configuration_path"] == str(root / "demo.cfg")
+
+    restricted = ToolService(service.backend, replace(service.settings, allowed_roots=()))
+    restricted.invoke("canoe_quit", {"on_dirty": "discard", "confirm": True})
+    rows = [json.loads(line) for line in service.settings.audit_path.read_text().splitlines()]
+    assert rows[-1]["configuration_path"] == "[redacted]"
+    assert rows[-1]["params"]["on_dirty"] == "discard"
+
+
+def test_audit_pre_preview_refusal_does_not_leak_outside_path(service: ToolService) -> None:
+    outside = str(service.settings.allowed_roots[0].parent / "private-outside.cfg")
+    with pytest.raises(c.BackendError) as raised:
+        service.invoke("canoe_open_config", {"path": outside, "confirm": True})
+    assert raised.value.code == c.ErrorCode.PATH_NOT_ALLOWED
+    rows = [json.loads(line) for line in service.settings.audit_path.read_text().splitlines()]
+    assert rows[0]["params"]["path"] == "[redacted]"
+    assert rows[0]["configuration_path"] is None
+    assert "private-outside" not in service.settings.audit_path.read_text()

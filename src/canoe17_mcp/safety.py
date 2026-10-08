@@ -102,6 +102,7 @@ class SafetyPolicy:
         dispatch: Callable[[c.CallContext], c.OperationStatus],
         wait_s: float | None = None,
         preview_call: Callable[[], c.Observed[c.EffectPreview]] | None = None,
+        before_dispatch: Callable[[c.Observed[c.EffectPreview]], None] | None = None,
     ) -> PolicyResult:
         self.check_access(write=True)
         if type(confirm) is not bool:
@@ -131,6 +132,8 @@ class SafetyPolicy:
             self._paths(request, preview.value)
             if not confirm:
                 return PolicyResult(preview)
+            if before_dispatch is not None:
+                before_dispatch(preview)
             if preview.value.blocked_by is not None:
                 reason = preview.value.blocked_by
                 code = {
@@ -149,7 +152,10 @@ class SafetyPolicy:
             del self._previews[request]
             return PolicyResult(preview, operation, needs_confirmation=False)
 
-    def cancel_operation(self, operation_id: str, *, confirm: bool) -> PolicyResult:
+    def cancel_operation(
+        self, operation_id: str, *, confirm: bool,
+        before_dispatch: Callable[[c.Observed[c.EffectPreview]], None] | None = None,
+    ) -> PolicyResult:
         """Control-lane cancellation is bound to the operation, not the current config.
 
         A queued job can be cancelled. An issued RPC cannot be unsent; the backend
@@ -161,6 +167,7 @@ class SafetyPolicy:
             return c.Observed(
                 c.EffectPreview(
                     "operation.cancel",
+                    configuration_path=self.backend.status().configuration_path,
                     affected=(operation_id,),
                     notes=(
                         "Cancellation does not undo dispatched effects or prove CANoe stopped.",
@@ -183,4 +190,5 @@ class SafetyPolicy:
             dispatch=dispatch,
             wait_s=0,
             preview_call=preview,
+            before_dispatch=before_dispatch,
         )

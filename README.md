@@ -66,11 +66,19 @@ as a plain path string. The log destination is explicitly trusted server setting
 separate from allowed CANoe project roots. `audit_max_bytes` defaults to 1 MiB
 per file and `audit_backup_count` to two numbered backups; rotation drops older
 records. Their environment overrides use JSON numbers. A small `.lock` file
-serializes appends and rotation across server processes.
+serializes appends and rotation across server processes, waiting up to 10 seconds
+for contention before failing closed.
 
 Each record has UTC `time`, `tool`, redacted `params`, compact `result`, elapsed
-`duration`, `call_id` and `backend`. Paths, object names/IDs, free text, returned
-payloads and error messages are omitted or redacted. Operation IDs, state, epoch,
+`duration`, `call_id`, `backend` and `configuration_path`. Audit parameters retain
+object/operation IDs, diagnostic qualifiers, bus/network selectors, closed
+window/section/on_dirty choices, scalar controls and paths validated against
+allowed roots. The active configuration path comes from the exact dispatch
+preview and is retained only if it is within allowed roots. A refusal before a
+usable preview has a null configuration path and redacted path parameters.
+Client-invented names, ECU identifiers, unknown fields, free text, returned
+payloads and error messages are redacted or omitted. Treat the local audit files
+as configuration metadata. Operation IDs, state, epoch,
 dispatch/effect flags and error codes remain available for correlation. Audit
 failure before dispatch refuses the mutation. Outcome-write failure adds an
 `audit_error` to the response while preserving its result and operation ID;
