@@ -225,18 +225,28 @@ class ComBackend:
         worker bumps the epoch, so it cannot change while ``fn`` runs; reading
         it again on the caller afterwards could label old data with a newer
         session (review C1).
+
+        Attach-on-read (AGENT-006 S1, PLAN.md section 4): when not connected, the
+        read first attaches to an already running CANoe on the worker, under the
+        session lock. It never launches, opens, saves or discards, and there is no
+        fallback after an attach error. The epoch is captured after attaching.
+        Status, availability and operation polling never come through here.
         """
 
         def on_worker(step: StepContext) -> tuple[Any, int]:
-            self._require_connected()
+            if not self.session.connected:
+                self._connect_on_worker(step, launch=False)
             epoch = self.store.epoch
             return fn(epoch), epoch
 
+        step_s = self.settings.quick_step_s
+        if not self.session.connected:
+            step_s = max(step_s, self.settings.open_step_s)  # first attach may be slow
         try:
             value, epoch = self.worker.call(
                 on_worker,
                 wait_s=min(2.0, self.settings.dispatch_timeout_s),
-                step_s=self.settings.quick_step_s,
+                step_s=step_s,
             )
         except BackendError as exc:
             if exc.code is ErrorCode.BUSY:

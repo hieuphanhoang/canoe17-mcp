@@ -462,3 +462,93 @@ def test_expected_open_bump_keeps_pending_open(backend: ComBackend, tmp_path: Pa
     current = backend.store.get(op_id)
     assert current is not None and current.state is OpState.RUNNING
     assert op_id in backend._watchers
+
+
+# S1: attach-on-read -----------------------------------------------------------------
+
+
+def _stub_attach(backend: ComBackend, app: Any, calls: list[bool]) -> None:
+    def attach(*, launch: bool) -> bool:
+        calls.append(launch)
+        backend.session.app = app
+        return True
+
+    backend.session.attach = attach  # type: ignore[method-assign]
+
+
+def test_read_attaches_without_touching_a_dirty_configuration(
+    backend: ComBackend, tmp_path: Path
+):
+    app = FakeApp(cfg_file(tmp_path), modified=True, running=False)
+    calls: list[bool] = []
+    _stub_attach(backend, app, calls)
+    assert backend.status().connected is False  # status never attaches
+    before = backend.store.epoch
+    observed = backend._read("probe", lambda epoch: ("value", epoch))
+    assert calls == [False]  # attach only, never launch
+    st = backend.status()
+    assert st.connected and st.lock_held
+    assert st.configuration_modified is True  # unsaved work preserved
+    assert app.calls == []  # nothing opened, saved or discarded
+    assert observed.epoch == st.epoch == before + 1 == observed.value[1]
+    # A second read reuses the session: no new attach, same epoch.
+    again = backend._read("probe2", lambda epoch: epoch)
+    assert calls == [False] and again.epoch == st.epoch
+
+
+def test_status_and_operation_polling_never_attach(backend: ComBackend, tmp_path: Path):
+    calls: list[bool] = []
+    _stub_attach(backend, FakeApp(cfg_file(tmp_path), modified=False, running=False), calls)
+    backend.status()
+    backend.availability()
+    op = backend.store.new_operation("compile", 0)
+    backend.operation(op.operation_id)
+    assert calls == [] and backend.status().connected is False
+
+
+@pytest.mark.parametrize(
+    "code", [ErrorCode.NO_ACTIVE_INSTANCE, ErrorCode.ATTACH_FAILED]
+)
+def test_read_attach_error_propagates_without_fallback(backend: ComBackend, code: ErrorCode):
+    from canoe17_mcp.contracts import BackendError
+
+    calls: list[bool] = []
+
+    def attach(*, launch: bool) -> bool:
+        calls.append(launch)
+        raise BackendError(code, "no")
+
+    backend.session.attach = attach  # type: ignore[method-assign]
+    with pytest.raises(BackendError) as raised:
+        backend._read("probe", lambda epoch: epoch)
+    assert raised.value.code is code
+    assert calls == [False]  # tried once, attach-only; no launch fallback
+    st = backend.status()
+    assert not st.connected and not st.lock_held  # lock released again
+
+
+def test_read_reports_foreign_lock(backend: ComBackend, tmp_path: Path):
+    from canoe17_mcp.com.lock import SessionLock
+    from canoe17_mcp.contracts import BackendError
+
+    calls: list[bool] = []
+    _stub_attach(backend, FakeApp(cfg_file(tmp_path), modified=False, running=False), calls)
+    other = SessionLock(backend.settings.lock_key, sidecar_dir=tmp_path / "other")
+    assert other.acquire()  # held by this (test) thread, as another server would
+    try:
+        with pytest.raises(BackendError) as raised:
+            backend._read("probe", lambda epoch: epoch)
+        assert raised.value.code is ErrorCode.LOCKED_BY_OTHER_SERVER
+        assert calls == []  # never touched CANoe
+    finally:
+        other.release()
+
+
+def test_real_attach_without_process_is_no_active_instance(monkeypatch: pytest.MonkeyPatch):
+    from canoe17_mcp.com import session as session_module
+    from canoe17_mcp.contracts import BackendError
+
+    monkeypatch.setattr(session_module, "canoe_processes", lambda: [])
+    with pytest.raises(BackendError) as raised:
+        session_module.ComSession().attach(launch=False)
+    assert raised.value.code is ErrorCode.NO_ACTIVE_INSTANCE

@@ -262,3 +262,43 @@ def test_write_window_read_and_clear(backend: ComBackend, sandbox: Path):
     assert cleared.state is OpState.COMPLETED, cleared.error
     after = backend.write_window(4000).value
     assert after.text == "" and not after.truncated
+
+
+def test_read_attaches_and_keeps_unsaved_work(
+    backend: ComBackend, sandbox: Path, tmp_path_factory: pytest.TempPathFactory
+):
+    """Attach-on-read (S1): a fresh backend's first read attaches to the running
+    CANoe and sees the operator's unsaved change; nothing is opened or discarded."""
+    from canoe17_mcp.contracts import DiagDescriptionInfo
+
+    udsbasic = sandbox / "UDSBasic"
+    cfg = str(udsbasic / "UDSBasic.cfg")
+    on_dirty: DirtyPolicy = "discard" if backend.status().configuration_modified else "refuse"
+    result_as(run(backend, backend.open_config(cfg, on_dirty, False, ctx(backend))), OpenResult)
+    extra = udsbasic / "Cdd" / "attach-extra.cdd"
+    shutil.copy2(udsbasic / "Cdd" / "UDS-ExampleEcu-6.0.1.cdd", extra)
+    result_as(
+        run(backend, backend.add_diag_description("CAN", str(extra), None, False, ctx(backend))),
+        DiagDescriptionInfo,
+    )
+    backend.shutdown()  # releases the lock; CANoe keeps the unsaved change
+
+    fresh = ComBackend(
+        BackendSettings(lock_key="live-probe-attach"),
+        lock_dir=tmp_path_factory.mktemp("lock2"),
+    )
+    try:
+        assert fresh.status().connected is False  # status alone never attaches
+        summary = fresh.summary("all")
+        st = fresh.status()
+        assert st.connected and st.configuration_modified is True
+        assert summary.epoch == st.epoch
+        assert summary.value.configuration_path.lower() == cfg.lower()
+        assert [d.id for d in summary.value.diag_descriptions] == ["diag:Door", "diag:Door_1"]
+        reset = result_as(
+            run(fresh, fresh.open_config(cfg, "discard", False, ctx(fresh))), OpenResult
+        )
+        assert reset.discarded_changes
+    finally:
+        fresh.shutdown()
+        extra.unlink(missing_ok=True)
