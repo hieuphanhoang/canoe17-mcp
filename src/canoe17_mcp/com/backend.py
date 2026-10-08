@@ -109,6 +109,31 @@ class _Watcher:
     deadline: float
 
 
+OPEN_SETTLE_S = 3.0
+"""Quiet time after the last OnOpen before an open completes (api-evidence C6)."""
+OPEN_EVENT_WAIT_S = 15.0
+"""Longest wait for the first OnOpen after Open() returned (it came ~1.8 s later, C1)."""
+
+
+@dataclass
+class _OpenWatcher:
+    """Completes open_config once CANoe's OnOpen events have settled.
+
+    Every OnOpen bumps the epoch, ours or not (review R1): nothing is
+    suppressed, so a GUI reopen always invalidates older previews. Waiting for
+    the events to settle only makes the operation's reported epoch the one in
+    force after CANoe's own (sometimes duplicated) OnOpen notifications.
+    """
+
+    operation_id: str
+    deadline: float
+    attached: bool
+    discarded_changes: bool
+    saved_previous_to: str | None
+    backup_path: str | None
+    settle_until: float | None = None
+
+
 def _com_error_handler(store: StateStore) -> Any:
     def handle(exc: BaseException, action: str) -> ErrorInfo | None:
         try:
@@ -137,7 +162,7 @@ class ComBackend:
         self.session = ComSession()
         self.lock = SessionLock(settings.lock_key, sidecar_dir=lock_dir)
         self._evidence = load_evidence()
-        self._watchers: dict[str, _Watcher] = {}
+        self._watchers: dict[str, _Watcher | _OpenWatcher] = {}
         self._seen: set[str] = set()
         self._next_snapshot = 0.0
         self.worker = StaWorker(self.store, com_error=_com_error_handler(self.store))
@@ -228,6 +253,8 @@ class ComBackend:
         self.session.ids.clear()
         self._seen.clear()
         for w in list(self._watchers.values()):
+            if isinstance(w, _OpenWatcher):
+                continue  # an open in progress expects the bump; see _OpenWatcher
             self._watchers.pop(w.operation_id, None)
             op = self.store.get(w.operation_id)
             if op is None or op.state not in (
@@ -274,7 +301,6 @@ class ComBackend:
                 ) from None
             backup = str(candidate)
         if target:
-            self.session.expect_own_open(target)
             step.dispatch("saving")
             cfg.Save(target, False)
         else:
@@ -348,9 +374,12 @@ class ComBackend:
     def _handle_event(self, name: str, args: tuple[Any, ...]) -> None:
         if name == "App.OnOpen":
             path = args[0] if args else ""
-            if not self.session.is_own_open(path):
-                self._bump_epoch()
+            self._bump_epoch()  # always: ours or a GUI open (review R1)
             self.store.update_session(configuration_path=path or None)
+            settle = time.monotonic() + OPEN_SETTLE_S
+            for w in self._watchers.values():
+                if isinstance(w, _OpenWatcher):
+                    w.settle_until = settle
         elif name == "App.OnQuit":
             self._disconnect_on_worker()
             self._bump_epoch()
@@ -361,7 +390,10 @@ class ComBackend:
             self.store.update_session(measurement_running=False)
             self._seen.add("stop")
 
-    def _advance(self, w: _Watcher, now: float) -> None:
+    def _advance(self, w: _Watcher | _OpenWatcher, now: float) -> None:
+        if isinstance(w, _OpenWatcher):
+            self._advance_open(w, now)
+            return
         flag = "start" if w.kind == "measurement.start" else "stop"
         op = self.store.get(w.operation_id)
         if op is None:
@@ -381,6 +413,32 @@ class ComBackend:
                     "deadline. Poll this operation and the measurement status.",
                 ),
             )
+
+    def _advance_open(self, w: _OpenWatcher, now: float) -> None:
+        settled = w.settle_until is not None and now >= w.settle_until
+        if not settled and now < w.deadline:
+            return
+        self._watchers.pop(w.operation_id, None)
+        op = self.store.get(w.operation_id)
+        if op is None or op.state not in (OpState.RUNNING, OpState.OUTCOME_UNKNOWN):
+            return
+        if w.settle_until is None:
+            # Open() returned but no OnOpen arrived: still a new session.
+            self._bump_epoch()
+        fields = self.session.session_fields()
+        self.store.update_session(**fields)
+        self.store.finish(
+            w.operation_id,
+            OpState.COMPLETED,
+            result=OpenResult(
+                active_path=str(fields["configuration_path"] or ""),
+                attached=w.attached,
+                discarded_changes=w.discarded_changes,
+                saved_previous_to=w.saved_previous_to,
+                epoch_after=self.store.epoch,
+                backup_path=w.backup_path,
+            ),
+        )
 
     def _on_shutdown(self) -> None:
         self._disconnect_on_worker()
@@ -433,7 +491,7 @@ class ComBackend:
     def open_config(
         self, path: str, on_dirty: DirtyPolicy, launch_if_absent: bool, ctx: CallContext
     ) -> OperationStatus:
-        def job(step: StepContext) -> OpenResult:
+        def job(step: StepContext) -> Any:
             attached = self._connect_on_worker(step, launch=launch_if_absent)
             app = self.session.app
             cfg = app.Configuration
@@ -450,19 +508,21 @@ class ComBackend:
             if modified and on_dirty == "save":
                 backup = self._save_with_backup(step, cfg, None)
                 saved_to = str(cfg.FullName)
-            self.session.expect_own_open(path)
             step.dispatch("opening")
             app.Open(path, False, False)
-            epoch = self._bump_epoch()
+            self._bump_epoch()
             self.store.update_session(**self.session.session_fields())
-            return OpenResult(
-                active_path=str(app.Configuration.FullName),
-                attached=attached,
-                discarded_changes=modified and on_dirty == "discard",
-                saved_previous_to=saved_to,
-                epoch_after=epoch,
-                backup_path=backup,
+            assert step.operation_id is not None
+            step.phase("awaiting_on_open")
+            self._watchers[step.operation_id] = _OpenWatcher(
+                step.operation_id,
+                time.monotonic() + OPEN_EVENT_WAIT_S,
+                attached,
+                modified and on_dirty == "discard",
+                saved_to,
+                backup,
             )
+            return PENDING
 
         step_s = self.settings.open_step_s + (
             self.settings.launch_step_s if launch_if_absent else 0.0
@@ -571,6 +631,11 @@ class ComBackend:
             if target and Path(target).exists():
                 overwrites = (target,)
                 notes.append("The existing file is backed up before it is overwritten.")
+        if request.action == "node.set_active":
+            notes.append(
+                "CANoe does not mark this change as unsaved (api-evidence C5/N2): it is "
+                "lost on reopen or on_dirty='refuse' will not protect it."
+            )
         needs_licence = request.action in ("save_config", "measurement.start") or saves_first
         if needs_licence and st.licensed is False:
             blocked = BlockReason.NO_LICENSE
@@ -842,14 +907,12 @@ class ComBackend:
             objs = self.session.database_objects()
             entries = self.session.database_entries()
             idx = self.session.ids.resolve("databases", self.store.epoch, entries, database_id)
-            db, bus_name = objs[idx]
+            _, bus_name = objs[idx]
             dbs = late(self.session.bus_named(bus_name).Databases)
-            target = str(db.FullName).lower()
-            position = next(
-                i
-                for i in range(1, int(dbs.Count) + 1)
-                if str(late(dbs.Item(i)).FullName).lower() == target
-            )
+            # database_objects() lists each bus's databases in collection order, so
+            # the 1-based position on that bus is the count of same-bus entries up
+            # to idx. Never search by path: duplicates share it (review R2).
+            position = sum(1 for _, b in objs[: idx + 1] if b == bus_name)
             step.dispatch("removing")
             dbs.Remove(position)
             self.session.ids.clear()

@@ -36,9 +36,6 @@ from canoe17_mcp.contracts import (
 log = logging.getLogger(__name__)
 
 PROGID = "CANoe.Application"
-OWN_OPEN_WINDOW_S = 15.0
-"""OnOpen arrived about 1.8 s after Open returned (api-evidence C1)."""
-
 DIAG_MODES = {
     0: "interpretation_only",
     1: "tester",
@@ -112,7 +109,6 @@ class ComSession:
         self.inbox = Inbox()
         self.ids = IdRegistry()
         self.launched = False
-        self._own_open: tuple[str, float] | None = None
 
     # -------------------------------------------------------------- connection
 
@@ -171,27 +167,6 @@ class ComSession:
         self.ids.clear()
 
     # ----------------------------------------------------------------- events
-
-    def expect_own_open(self, path: str) -> None:
-        self._own_open = (path.lower(), time.monotonic() + OWN_OPEN_WINDOW_S)
-
-    def is_own_open(self, path: str) -> bool:
-        """True for the OnOpen our own open/save triggered.
-
-        CANoe sometimes fires OnOpen twice for one Open call, with the second
-        arriving at an unpredictable delay (api-evidence C6). So every OnOpen for
-        the path we opened counts as ours until the window ends. Trade-off: a GUI
-        reopen of the same file inside that window does not bump the epoch; stale
-        IDs then still fail as NOT_FOUND, and @n IDs by fingerprint.
-        """
-        own = self._own_open
-        if own is None:
-            return False
-        now = time.monotonic()
-        if now > own[1]:
-            self._own_open = None
-            return False
-        return path.lower() == own[0]
 
     # ------------------------------------------------------------------ reads
 

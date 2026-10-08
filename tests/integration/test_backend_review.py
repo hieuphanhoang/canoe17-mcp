@@ -24,6 +24,7 @@ from canoe17_mcp.contracts import (
     CallContext,
     EffectRequest,
     ErrorCode,
+    OpenResult,
     OperationStatus,
     OpState,
     SaveResult,
@@ -51,8 +52,13 @@ class FakeApp:
         self.Version = SimpleNamespace(major=17, minor=6, Build=5)
         self.FullName = "fake-canoe.exe"
 
+    on_open: Any = None
+    """Set by attach(): emits App.OnOpen the way CANoe does after Open()."""
+
     def Open(self, path: str, *_: Any) -> None:  # noqa: N802
         self.calls.append(f"Open({path})")
+        if self.on_open is not None:
+            self.on_open(path)
         self.Configuration.FullName = path
         self.Configuration.Modified = False
 
@@ -61,7 +67,10 @@ class FakeApp:
 
 
 @pytest.fixture
-def backend(tmp_path: Path):
+def backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from canoe17_mcp.com import backend as backend_module
+
+    monkeypatch.setattr(backend_module, "OPEN_SETTLE_S", 0.05)
     b = ComBackend(
         BackendSettings(lock_key=f"review-{time.monotonic_ns()}"), lock_dir=tmp_path / "lock"
     )
@@ -71,6 +80,7 @@ def backend(tmp_path: Path):
 
 
 def attach(b: ComBackend, app: FakeApp) -> CallContext:
+    app.on_open = lambda path: b.session.inbox.push("App.OnOpen", path)
     b.session.app = app
     b.store.update_session(connected=True)
     return CallContext(expected_epoch=b.store.epoch)
@@ -276,19 +286,97 @@ def test_preview_blocks_while_measuring(backend: ComBackend, action: str, licens
     assert pv.value.blocked_by is BlockReason.MEASUREMENT_RUNNING
 
 
-# Own-open recognition (api-evidence C6) ---------------------------------------
+# R1: every OnOpen invalidates; open completes after events settle -------------
 
 
-def test_own_open_matches_repeats_until_window_ends(monkeypatch: pytest.MonkeyPatch):
-    from canoe17_mcp.com import session as sess
+def test_gui_reopen_of_same_file_bumps_epoch(backend: ComBackend, tmp_path: Path):
+    path = cfg_file(tmp_path)
+    ctx = attach(backend, FakeApp(path, modified=False, running=False))
+    opened = finished(backend, backend.open_config(str(path), "refuse", False, ctx))
+    result = opened.result
+    assert isinstance(result, OpenResult)
+    epoch = result.epoch_after
+    assert epoch == backend.store.epoch
+    # An operator reopens the same file in the GUI: same names survive, but every
+    # earlier preview/ID authorisation must become stale.
+    backend.session.inbox.push("App.OnOpen", str(path))
+    deadline = time.monotonic() + 2
+    while backend.store.epoch == epoch:
+        assert time.monotonic() < deadline, "GUI reopen did not bump the epoch"
+        time.sleep(0.01)
+    stale = finished(backend, backend.compile(CallContext(expected_epoch=epoch)))
+    assert stale.state is OpState.FAILED
+    assert stale.error is not None and stale.error.code is ErrorCode.STALE_SESSION
 
-    now = [100.0]
-    monkeypatch.setattr(sess.time, "monotonic", lambda: now[0])
-    s = sess.ComSession()
-    s.expect_own_open("E:/X/A.cfg")
-    assert not s.is_own_open("E:/X/B.cfg")
-    assert s.is_own_open("e:/x/a.cfg")
-    now[0] += 5
-    assert s.is_own_open("E:/X/A.cfg")  # late duplicate still ours
-    now[0] += sess.OWN_OPEN_WINDOW_S
-    assert not s.is_own_open("E:/X/A.cfg")  # window over: a real change
+
+def test_open_reports_epoch_after_duplicate_on_open(backend: ComBackend, tmp_path: Path):
+    path = cfg_file(tmp_path)
+    app = FakeApp(path, modified=False, running=False)
+    ctx = attach(backend, app)
+    first = app.on_open
+
+    def twice(p: str) -> None:  # CANoe sometimes reports one Open twice (C6)
+        first(p)
+        first(p)
+
+    app.on_open = twice
+    done = finished(backend, backend.open_config(str(path), "refuse", False, ctx))
+    result = done.result
+    assert isinstance(result, OpenResult)
+    assert result.epoch_after == backend.store.epoch  # usable right away
+
+
+# R2: remove the exact duplicate --------------------------------------------------
+
+
+def test_remove_database_removes_the_requested_duplicate(
+    backend: ComBackend, monkeypatch: pytest.MonkeyPatch
+):
+    from canoe17_mcp.com import backend as backend_module
+    from canoe17_mcp.com import session as session_module
+
+    monkeypatch.setattr(backend_module, "late", lambda o: o)
+    monkeypatch.setattr(session_module, "late", lambda o: o)
+    removed: list[int] = []
+
+    class Coll:
+        def __init__(self, entries: list[Any]) -> None:
+            self.entries = entries
+
+        @property
+        def Count(self) -> int:  # noqa: N802
+            return len(self.entries)
+
+        def Item(self, i: int) -> Any:  # noqa: N802
+            return self.entries[i - 1]
+
+        def Remove(self, i: int) -> None:  # noqa: N802
+            removed.append(i)
+
+    db = SimpleNamespace(Name="X", FullName="C:/db/x.dbc", Channel=1)
+    bus = SimpleNamespace(Name="CAN", Databases=Coll([db, SimpleNamespace(**vars(db))]))
+    app = SimpleNamespace(
+        Configuration=SimpleNamespace(
+            FullName="C:/a.cfg", Modified=False, SimulationSetup=SimpleNamespace(Buses=Coll([bus]))
+        ),
+        Measurement=SimpleNamespace(Running=False),
+    )
+    backend.session.app = app
+    backend.store.update_session(connected=True)
+    ids = [d.id for d in backend.databases().value]
+    assert ids == ["db:X@1", "db:X@2"]
+    done = finished(
+        backend,
+        backend.remove_database("db:X@2", CallContext(expected_epoch=backend.store.epoch)),
+    )
+    assert done.state is OpState.COMPLETED, done.error
+    assert removed == [2]
+
+
+# R3 ------------------------------------------------------------------------------
+
+
+def test_node_set_active_preview_warns_about_untracked_change(backend: ComBackend):
+    backend.store.update_session(connected=True, configuration_path="C:/a.cfg")
+    pv = backend.preview(EffectRequest("node.set_active", (("node_id", "node:A"),)))
+    assert any("not mark this change as unsaved" in n for n in pv.value.notes)
