@@ -552,3 +552,44 @@ def test_real_attach_without_process_is_no_active_instance(monkeypatch: pytest.M
     with pytest.raises(BackendError) as raised:
         session_module.ComSession().attach(launch=False)
     assert raised.value.code is ErrorCode.NO_ACTIVE_INSTANCE
+
+
+# Measurement-start preview lists what may transmit ------------------------------
+
+
+def test_measurement_preview_lists_active_nodes_and_auto_tests(
+    backend: ComBackend, monkeypatch: pytest.MonkeyPatch
+):
+    from canoe17_mcp.contracts import NodeInfo, Observed, TestModuleInfo, TestSetupInfo
+
+    nodes = (
+        NodeInfo("node:Tester", "Tester", True, None),
+        NodeInfo("node:Off", "Off", False, None),
+        NodeInfo("node:Test 3", "Test 3", True, None, test_module=True),
+    )
+    sim = TestModuleInfo(
+        "tm-sim:Test 3", "Test 3", None, True, True, source="simulation_setup", startable=False
+    )
+    epoch = backend.store.epoch
+    monkeypatch.setattr(backend, "nodes", lambda: Observed(nodes, epoch, 0.0))
+    monkeypatch.setattr(
+        backend, "test_setup", lambda: Observed(TestSetupInfo((), (sim,)), epoch, 0.0)
+    )
+    pv = backend.preview(EffectRequest("measurement.start"))
+    assert pv.value.active_simulation_nodes == ("node:Tester",)
+    assert pv.value.auto_start_test_modules == ("tm-sim:Test 3",)
+    assert pv.epoch == epoch
+
+
+def test_measurement_preview_says_when_traffic_is_unknown(
+    backend: ComBackend, monkeypatch: pytest.MonkeyPatch
+):
+    from canoe17_mcp.contracts import BackendError
+
+    def fail() -> Any:
+        raise BackendError(ErrorCode.NO_ACTIVE_INSTANCE, "no")
+
+    monkeypatch.setattr(backend, "nodes", fail)
+    pv = backend.preview(EffectRequest("measurement.start"))
+    assert pv.value.active_simulation_nodes == ()
+    assert any("may transmit are unknown" in n for n in pv.value.notes)

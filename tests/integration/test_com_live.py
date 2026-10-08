@@ -100,6 +100,10 @@ def test_open_inspect_compile(backend: ComBackend, sandbox: Path):
     comp = result_as(run(backend, backend.compile(ctx(backend))), CompileResult)
     assert comp.success
 
+    pv = backend.preview(EffectRequest("measurement.start")).value
+    assert set(pv.active_simulation_nodes) == {"node:Tester", "node:SimDiagECU"}
+    assert pv.auto_start_test_modules == ("tm-sim:Test 3",)
+
 
 def test_diag_windows_and_duplicate_refused(backend: ComBackend, sandbox: Path):
     opened = run(backend, backend.diag_windows("diag:Door", "console", True, ctx(backend)))

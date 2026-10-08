@@ -48,8 +48,14 @@ descriptions, Test Setup) work unlicensed but cannot be saved without one.
 
 ## Not verified at all yet
 
-Everything that needs a licence or hardware: measurement events, test runs and
-report files, UDS requests and responses, Tester Present, CAPL function calls,
-signal values, frames on a real bus, and channel mapping to a Vector interface.
-Run the bench profile of the integration tests on a licensed bench PC to verify
-them (see `tests/integration/conftest.py`).
+Everything that needs a licence or hardware.
+
+- **Covered by the licensed bench profile** (`CANOE17_MCP_BENCH=1`, see
+  `tests/integration/conftest.py`): save-copy with backup and persistence,
+  `on_dirty="save"` before an open, and measurement start/stop events. Passing
+  proves licensed COM behaviour, not hardware behaviour.
+- **Not implemented yet, so no probe exists**: test runs and report files, UDS
+  requests and responses, Tester Present, CAPL function calls, signal and
+  system-variable values, frames on a real bus, and channel mapping to a Vector
+  interface. They stay deferred until they are built and verified per operation
+  with physical evidence.

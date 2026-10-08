@@ -4,9 +4,11 @@ These cover what the unlicensed demo PC cannot verify (api-evidence C3, M1):
 save-copy with backup and persistence, ``on_dirty="save"`` before an open, and
 measurement start/stop confirmed by events. They use only the sandbox copies.
 
-Evidence level when they pass: demo_verified on a licensed PC, or
-bench_verified on the test bench. Record the result in docs/com/api-evidence.md.
-Not yet run anywhere: written for the first licensed run.
+Passing proves licensed real-COM behaviour (demo_verified on a licensed PC).
+None of these probes needs or observes Vector hardware, so passing them on the
+bench is still not bench_verified; that needs per-operation physical evidence.
+Record the result in docs/com/api-evidence.md. Not yet run anywhere: written
+for the first licensed run.
 """
 
 from __future__ import annotations
@@ -37,8 +39,10 @@ def licensed_backend(
     sandbox: Path, bench: None, tmp_path_factory: pytest.TempPathFactory
 ) -> Iterator[ComBackend]:
     b = ComBackend(BackendSettings(lock_key="bench-probe"), lock_dir=tmp_path_factory.mktemp("l"))
-    yield b
-    b.shutdown()
+    try:
+        yield b
+    finally:
+        b.shutdown()  # releases COM and the lock; never stops CANoe or a measurement
 
 
 @pytest.fixture
@@ -123,12 +127,23 @@ def test_measurement_start_stop_confirmed_by_events(
 ):
     b = licensed_backend
     _open(b, workdir / "UDSBasic.cfg", sandbox)
-    started = run(b, b.measurement_start(ctx(b)), wait=60)
-    assert started.state is OpState.COMPLETED, started.error
-    assert b.status().measurement_running is True
-    # Configuration-level actions are refused while measuring (C6).
-    blocked = run(b, b.remove_diag_description("diag:Door", ctx(b)))
-    assert error_code(blocked) is ErrorCode.MEASUREMENT_RUNNING and not blocked.dispatched
-    stopped = run(b, b.measurement_stop(ctx(b)), wait=60)
-    assert stopped.state is OpState.COMPLETED, stopped.error
-    assert b.status().measurement_running is False
+    stopped = None
+    try:
+        started = run(b, b.measurement_start(ctx(b)), wait=60)
+        assert started.state is OpState.COMPLETED, started.error
+        assert b.status().measurement_running is True
+        # Configuration-level actions are refused while measuring (C6).
+        blocked = run(b, b.remove_diag_description("diag:Door", ctx(b)))
+        assert error_code(blocked) is ErrorCode.MEASUREMENT_RUNNING and not blocked.dispatched
+        stopped = run(b, b.measurement_stop(ctx(b)), wait=60)
+        assert stopped.state is OpState.COMPLETED, stopped.error
+        assert b.status().measurement_running is False
+    finally:
+        # Never leave a measurement running on the bench, whatever failed above
+        # (including a start that did not complete).
+        if stopped is None and b.status().measurement_running is not False:
+            cleanup = b.wait(b.measurement_stop(ctx(b)).operation_id, 60).value
+            if cleanup.state is not OpState.COMPLETED or b.status().measurement_running:
+                pytest.fail(
+                    f"CLEANUP FAILED: measurement may still be running in CANoe: {cleanup}"
+                )

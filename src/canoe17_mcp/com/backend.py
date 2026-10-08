@@ -638,8 +638,29 @@ class ComBackend:
 
     def preview(self, request: EffectRequest) -> Observed[EffectPreview]:
         params = dict(request.params)
-        st = self.store.status(self.backend_name)
         notes: list[str] = []
+        active_nodes: tuple[str, ...] = ()
+        auto_tests: tuple[str, ...] = ()
+        read_epochs: list[int] = []
+        if request.action == "measurement.start":
+            # What may transmit or run once measurement starts (skill + safety review).
+            try:
+                nodes = self.nodes()
+                setup = self.test_setup()
+                read_epochs += [nodes.epoch, setup.epoch]
+                active_nodes = tuple(n.id for n in nodes.value if n.active and not n.test_module)
+                auto_tests = tuple(t.id for t in setup.value.simulation_test_nodes if t.enabled)
+                if any(e.modules for e in setup.value.environments):
+                    notes.append(
+                        "Test Setup modules may also start automatically; CANoe 17 COM does "
+                        "not expose their start-on-measurement setting. Check in CANoe."
+                    )
+            except BackendError as exc:
+                notes.append(
+                    f"Could not list nodes and test modules ({exc.code.value}); the "
+                    "simulation nodes that may transmit are unknown."
+                )
+        st = self.store.status(self.backend_name)
         launches = False
         discards = False
         overwrites: tuple[str, ...] = ()
@@ -695,10 +716,15 @@ class ComBackend:
             configuration_path=st.configuration_path,
             configuration_modified=st.configuration_modified,
             discards_changes=discards,
+            auto_start_test_modules=auto_tests,
+            active_simulation_nodes=active_nodes,
             blocked_by=blocked,
             notes=tuple(notes),
         )
-        return self.store.observed(preview, epoch=st.epoch, age_s=st.snapshot_age_s)
+        # If the lists came from an older session, the oldest epoch authorises the
+        # confirmation, so a session change in between makes it stale (safe).
+        epoch = min([st.epoch, *read_epochs])
+        return self.store.observed(preview, epoch=epoch, age_s=st.snapshot_age_s)
 
     # ================================================================== reads
 
