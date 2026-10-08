@@ -1,0 +1,10 @@
+# Merge this table into the operator's Codex config; do not replace other tables.
+[mcp_servers.canoe17]
+command = "uv"
+args = ["--directory", "C:/Bench/canoe17-mcp", "run", "--frozen", "--no-sync", "canoe17-mcp", "--config", "C:/Bench/settings/read-only.toml"]
+startup_timeout_sec = 30
+tool_timeout_sec = 60
+
+[mcp_servers.canoe17.env]
+CANOE17_MCP_READ_ONLY = "true"
+CANOE17_MCP_LOCK_KEY = "default"

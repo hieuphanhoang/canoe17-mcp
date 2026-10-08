@@ -1,0 +1,13 @@
+# Example server settings; copy outside the checkout and adapt paths.
+backend_kind = "com"
+read_only = true
+allowed_roots = []
+audit_path = "C:/Bench/logs/canoe17-mcp/audit.jsonl"
+audit_max_bytes = 1048576
+audit_backup_count = 2
+
+[backend]
+# All clients controlling this CANoe instance must use the same key.
+lock_key = "default"
+allow_launch = false
+min_evidence = "demo_verified"

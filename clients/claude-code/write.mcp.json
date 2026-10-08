@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "canoe17": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["--directory", "C:/Bench/canoe17-mcp", "run", "--frozen", "--no-sync", "canoe17-mcp", "--config", "C:/Bench/settings/write.toml"],
+      "env": {
+        "CANOE17_MCP_READ_ONLY": "false",
+        "CANOE17_MCP_ALLOWED_ROOTS": "[\"C:/Bench/projects\"]",
+        "CANOE17_MCP_LOCK_KEY": "default"
+      }
+    }
+  }
+}

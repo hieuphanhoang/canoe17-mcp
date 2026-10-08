@@ -3,13 +3,19 @@
 A local stdio MCP server for CANoe 17 SP6 Test Bench Edition. It uses the
 [official MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk/tree/v1.x).
 The COM backend needs Windows, 64-bit Python and CANoe 17. Install with `uv sync
---extra com`, copy `canoe17-mcp.example.toml`, and set absolute `allowed_roots`.
+--frozen --extra com`, copy `canoe17-mcp.example.toml`, and set absolute `allowed_roots`.
 
 ```powershell
-uv run canoe17-mcp --config path/to/settings.toml
+uv run --frozen --no-sync canoe17-mcp --config path/to/settings.toml
 ```
 
 Use that command and arguments in your MCP client's stdio server configuration.
+See the [setup guide](docs/setup/README.md), [read-only/write client examples](clients/README.md)
+for Claude Code, Codex and opencode/Qwen, and the [agent skill](skills/canoe17/SKILL.md).
+Run `uv run --frozen --no-sync canoe17-mcp --check --config path/to/settings.toml` for installation
+JSON and an exit code without connecting to or starting CANoe. The check reads
+COM registration and probes audit-directory permissions; it creates missing
+audit parent directories but preserves existing audit contents.
 Stdout carries MCP JSON-RPC only; logs go to stderr. The process releases its
 backend worker/session lock on normal exit; exiting the server does not quit CANoe.
 
@@ -96,6 +102,8 @@ uv run pyright
 uv run pytest -m "not canoe"
 ```
 
-Live tests are opt-in. See `docs/com/` for evidence and licence limitations.
+Live tests are opt-in. See [known limitations](docs/com/known-limitations.md)
+and the [licensed/physical bench checklist](docs/validation/bench-checklist.md)
+for prerequisites, strict licensed probes and evidence to return.
 This milestone does not implement report parsing, hardware
 validation, or the deferred catalogue extensions.

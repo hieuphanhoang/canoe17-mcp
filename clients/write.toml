@@ -1,0 +1,13 @@
+# Example server settings; enable only for approved complete working copies.
+backend_kind = "com"
+read_only = false
+allowed_roots = ["C:/Bench/projects"]
+audit_path = "C:/Bench/logs/canoe17-mcp/audit.jsonl"
+audit_max_bytes = 1048576
+audit_backup_count = 2
+
+[backend]
+lock_key = "default"
+# Open existing CANoe only unless an operator explicitly enables launching.
+allow_launch = false
+min_evidence = "demo_verified"

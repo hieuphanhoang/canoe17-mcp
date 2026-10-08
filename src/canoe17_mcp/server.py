@@ -409,6 +409,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="CANoe 17 MCP server (stdio only)")
     parser.add_argument("--config", help="TOML settings path")
     parser.add_argument("--backend", choices=("com", "fake"), help="Override backend_kind")
+    parser.add_argument(
+        "--check", action="store_true",
+        help="Print installation-check JSON and exit without connecting to CANoe",
+    )
     options = parser.parse_args(argv)
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
     backend: c.Backend | None = None
@@ -416,10 +420,22 @@ def main(argv: list[str] | None = None) -> int:
         settings = load_settings(options.config)
         if options.backend is not None:
             settings = replace(settings, backend_kind=options.backend)
+        if options.check:
+            from .check import installation_check
+
+            report = installation_check(settings)
+            print(json.dumps(report))
+            return 0 if report["ok"] else 1
         backend = make_backend(settings)
         create_server(backend, settings).run(transport="stdio")
         return 0
     except (ValueError, OSError, ImportError, c.BackendError) as exc:
+        if options.check:
+            print(json.dumps({
+                "ok": False,
+                "checks": [{"name": "settings", "status": "fail", "detail": str(exc)}],
+            }))
+            return 1
         log.error("Server failed: %s", exc)
         return 1
     finally:
