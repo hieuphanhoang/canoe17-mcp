@@ -38,8 +38,8 @@ ref = "api-evidence U1, T1, D2"
 
 [operations."database.list"]
 support = "implemented"
-evidence = "documented"
-note = "Read path exercised on UDSBasic, which has no databases."
+evidence = "demo_verified"
+ref = "api-evidence N3"
 
 [operations."database.set_channel"]
 support = "implemented"
@@ -82,11 +82,13 @@ evidence = "documented"
 
 [operations."write_window.read"]
 support = "implemented"
-evidence = "documented"
+evidence = "demo_verified"
+ref = "api-evidence W1"
 
 [operations."write_window.clear"]
 support = "implemented"
-evidence = "documented"
+evidence = "demo_verified"
+ref = "api-evidence W1"
 
 [operations."test_setup.list"]
 support = "implemented"

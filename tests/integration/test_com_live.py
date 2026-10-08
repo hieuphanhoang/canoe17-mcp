@@ -248,3 +248,17 @@ def test_licence_free_config_edits(backend: ComBackend, sandbox: Path):
     )
     assert reset.discarded_changes
     capl.unlink(missing_ok=True)
+
+
+def test_write_window_read_and_clear(backend: ComBackend, sandbox: Path):
+    from canoe17_mcp.contracts import WriteWindowText
+
+    cfg = str(sandbox / "UDSBasic" / "UDSBasic.cfg")
+    on_dirty: DirtyPolicy = "discard" if backend.status().configuration_modified else "refuse"
+    result_as(run(backend, backend.open_config(cfg, on_dirty, False, ctx(backend))), OpenResult)
+    text = backend.write_window(4000).value
+    assert isinstance(text, WriteWindowText)
+    cleared = run(backend, backend.clear_write_window(ctx(backend)))
+    assert cleared.state is OpState.COMPLETED, cleared.error
+    after = backend.write_window(4000).value
+    assert after.text == "" and not after.truncated

@@ -55,6 +55,8 @@ the help says. Each row names its evidence level:
 | T3 | `TestSetup.TestEnvironments.Add(<.tse>)` | Needs an existing file; a new path fails "File not Found!". With a copied sample `.tse` it loads, including its modules (paths resolved relative to the `.tse`) | demo_verified | add_environment pre-checks the file exists |
 | T4 | `TestEnvironment.TestModules.Add(<.can>)`, `TSTestModule.Enabled` | Module appended at the end (named `Test 4`); `Enabled` settable; `TestEnvironments.Remove(index, False)` works | demo_verified | add_module and set_enabled implemented |
 | T5 | `TSTestModule.Start()` with measurement stopped | Returns without error and without a licence error; effect not observable without a measurement | demo_verified | Test runs stay licence-gated (M1) |
+| W1 | `UI.Write.Text` read, `UI.Write.Clear()` | Both work unlicensed; after Clear the text reads back empty | demo_verified | write_window read/clear verified |
+| S1 | The stdio server (`canoe17-mcp --backend com`) driven as an MCP client | Gate-3 demo passed: see `demo-2026-10-08.md` | demo_verified | First real end-to-end run |
 | U1 | `Networks("CAN").Devices` in UDSBasic | `Tester`, `TestModule`, `SimDiagECU`, `Door` | demo_verified | Diagnostic target for the raw request spike is `Door` |
 
 ## Licence error

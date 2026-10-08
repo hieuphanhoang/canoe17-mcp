@@ -23,6 +23,7 @@ from typing import Any, Literal
 
 from canoe17_mcp.com.errors import classify
 from canoe17_mcp.com.lock import SessionLock
+from canoe17_mcp.com.process import canoe_processes
 from canoe17_mcp.com.session import ComSession, late
 from canoe17_mcp.com.state import StateStore
 from canoe17_mcp.com.worker import PENDING, StaWorker, StepContext
@@ -610,7 +611,11 @@ class ComBackend:
         if request.action in ("open_config", "quit"):
             on_dirty = params.get("on_dirty", "refuse")
             if request.action == "open_config":
-                launches = not st.connected and bool(params.get("launch_if_absent", True))
+                launches = (
+                    not st.connected
+                    and bool(params.get("launch_if_absent", True))
+                    and not canoe_processes()  # attach, not launch, when CANoe runs
+                )
             if st.configuration_modified:
                 if on_dirty == "refuse":
                     # Not a block: the backend's own pre-dispatch check refuses with the

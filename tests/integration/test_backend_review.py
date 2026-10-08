@@ -380,3 +380,15 @@ def test_node_set_active_preview_warns_about_untracked_change(backend: ComBacken
     backend.store.update_session(connected=True, configuration_path="C:/a.cfg")
     pv = backend.preview(EffectRequest("node.set_active", (("node_id", "node:A"),)))
     assert any("not mark this change as unsaved" in n for n in pv.value.notes)
+
+
+def test_open_preview_launches_only_without_a_canoe_process(
+    backend: ComBackend, monkeypatch: pytest.MonkeyPatch
+):
+    from canoe17_mcp.com import backend as backend_module
+
+    request = EffectRequest("open_config", (("launch_if_absent", True), ("path", "C:/a.cfg")))
+    monkeypatch.setattr(backend_module, "canoe_processes", lambda: [(1, "CANoeTBE.exe")])
+    assert backend.preview(request).value.launches_canoe is False
+    monkeypatch.setattr(backend_module, "canoe_processes", lambda: [])
+    assert backend.preview(request).value.launches_canoe is True
