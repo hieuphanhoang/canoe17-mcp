@@ -149,3 +149,134 @@ def test_server_demo_on_udsbasic_copy(sandbox: Path, tmp_path: Path):
     extra.unlink(missing_ok=True)
     out = sandbox / "demo-transcript.json"
     out.write_text(json.dumps(transcript, indent=1), encoding="utf-8")
+
+
+def test_server_edit_tools_and_audit(sandbox: Path, tmp_path: Path):
+    """Milestone 3 demo: attach-on-read, the new edit tools and the audit log."""
+    udsbasic = sandbox / "UDSBasic"
+    cfg = udsbasic / "UDSBasic.cfg"
+    dbc = sandbox / "Easy" / "CANdb" / "easy.dbc"
+    tse = udsbasic / "ProbeTestSetup.tse"
+    if not dbc.is_file() or not tse.is_file():
+        pytest.skip("needs Easy/CANdb/easy.dbc and UDSBasic/ProbeTestSetup.tse in the sandbox")
+    capl = udsbasic / "Nodes" / "DemoNode.can"
+    capl.write_text("variables {}\n", encoding="ascii")
+    audit = tmp_path / "audit.jsonl"
+    settings = tmp_path / "demo3.toml"
+    settings.write_text(
+        "read_only = false\n"
+        f"allowed_roots = [{json.dumps(str(sandbox))}]\n"
+        'backend_kind = "com"\n'
+        f"audit_path = {json.dumps(str(audit))}\n"
+        "[backend]\n"
+        'lock_key = "server-demo3"\n',
+        encoding="utf-8",
+    )
+    params = StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "canoe17_mcp.server", "--config", str(settings), "--backend", "com"],
+        env={**os.environ},
+    )
+
+    async def scenario() -> list[dict[str, Any]]:
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                demo = Demo(session)
+                tools = {t.name for t in (await session.list_tools()).tools}
+                demo.transcript.append({"tools": sorted(tools)})
+                assert {"canoe_node", "canoe_test_setup", "canoe_can_controller"} <= tools
+
+                # Attach-on-read: summary before any open, CANoe already running.
+                summary = await demo.call("canoe_get_config_summary", {"section": "all"})
+                if "error" in summary:
+                    pytest.skip(f"CANoe not running for attach-on-read: {summary['error']}")
+                path = summary["result"]["value"]["configuration_path"]
+                if (
+                    path.lower() != str(cfg).lower()
+                    or (
+                        (await demo.call("canoe_status", {}))["result"]["session"][
+                            "configuration_modified"
+                        ]
+                    )
+                ):
+                    opened = await demo.confirmed(
+                        "canoe_open_config",
+                        {"path": str(cfg), "on_dirty": "discard", "launch_if_absent": False},
+                    )
+                    assert opened["state"] == "completed", opened
+
+                ctl = await demo.call(
+                    "canoe_can_controller", {"action": "read", "bus": "CAN", "channel": 1}
+                )
+                assert ctl["result"]["value"]["bitrate_bps"] == 500000
+
+                node = await demo.confirmed(
+                    "canoe_node",
+                    {"action": "add", "name": "DemoNode", "bus": "CAN", "capl_path": str(capl)},
+                )
+                assert node["state"] == "completed", node
+                assert node["result"]["id"] == "node:DemoNode"
+                off = await demo.confirmed(
+                    "canoe_node",
+                    {"action": "set_active", "node_id": "node:DemoNode", "active": False},
+                )
+                assert off["result"]["active"] is False
+                gone = await demo.confirmed(
+                    "canoe_node", {"action": "remove", "node_id": "node:DemoNode"}
+                )
+                assert gone["state"] == "completed", gone
+
+                db = await demo.confirmed(
+                    "canoe_database",
+                    {"action": "add", "path": str(dbc), "bus": "CAN", "channel": 1},
+                )
+                assert db["state"] == "completed" and db["result"]["id"] == "db:easy", db
+                dropped = await demo.confirmed(
+                    "canoe_database", {"action": "remove", "database_id": "db:easy"}
+                )
+                assert dropped["state"] == "completed", dropped
+
+                env = await demo.confirmed(
+                    "canoe_test_setup", {"action": "add_environment", "tse_path": str(tse)}
+                )
+                assert env["state"] == "completed", env
+                module = await demo.confirmed(
+                    "canoe_test_setup",
+                    {
+                        "action": "add_module",
+                        "environment_id": env["result"]["id"],
+                        "can_path": str(udsbasic / "Tester" / "TestModule.can"),
+                    },
+                )
+                assert module["state"] == "completed", module
+                disabled = await demo.confirmed(
+                    "canoe_test_setup",
+                    {
+                        "action": "set_enabled",
+                        "module_id": module["result"]["id"],
+                        "enabled": False,
+                    },
+                )
+                assert disabled["result"]["enabled"] is False
+
+                reset = await demo.confirmed(
+                    "canoe_open_config",
+                    {"path": str(cfg), "on_dirty": "discard", "launch_if_absent": False},
+                )
+                assert reset["state"] == "completed", reset
+                return demo.transcript
+
+    transcript = anyio.run(scenario)
+    capl.unlink(missing_ok=True)
+    (sandbox / "demo3-transcript.json").write_text(
+        json.dumps(transcript, indent=1), encoding="utf-8"
+    )
+
+    records = [json.loads(line) for line in audit.read_text(encoding="utf-8").splitlines()]
+    shutil.copy2(audit, sandbox / "demo3-audit.jsonl")
+    confirmed = sum(1 for e in transcript[1:] if e.get("arguments", {}).get("confirm") is True)
+    attempts = [r for r in records if r["result"].get("state") == "attempt"]
+    assert len(attempts) == confirmed
+    text = audit.read_text(encoding="utf-8")
+    assert str(sandbox).replace("\\", "\\\\") not in text and "DemoNode" not in text  # redacted
