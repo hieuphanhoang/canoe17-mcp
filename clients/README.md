@@ -5,7 +5,7 @@ These are examples, not registrations. Adapt `C:/Bench/canoe17-mcp`,
 Copy [read-only.toml](read-only.toml) or [write.toml](write.toml) to the settings
 directory. Also update path strings inside the client examples, including the
 write-mode `CANOE17_MCP_ALLOWED_ROOTS` JSON array. Keep production projects
-outside the writable roots. Install first using the [setup guide](../docs/setup/README.md).
+outside the writable roots. Install first as described in the [README](../README.md#2-install).
 
 Use one variant per client, under the same server name `canoe17`. Start with
 read-only: previews are mutations too and will be refused. Client permissions

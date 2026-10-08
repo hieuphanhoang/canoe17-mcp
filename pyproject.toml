@@ -27,7 +27,6 @@ packages = ["src/canoe17_mcp"]
 "contracts/tools.json" = "canoe17_mcp/schemas/tools.json"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
 markers = ["canoe: opt-in tests requiring a real CANoe installation"]
 
 [tool.ruff]
@@ -38,7 +37,7 @@ line-length = 100
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src"]
 pythonVersion = "3.12"
 typeCheckingMode = "basic"
 venvPath = "."

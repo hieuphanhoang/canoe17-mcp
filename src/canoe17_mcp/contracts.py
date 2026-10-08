@@ -10,7 +10,8 @@ Snapshots are deeply immutable: sequences are tuples and maps are tuples of
 key/value tuples, never list or dict.
 
 Version 0.2. Design notes and the review record: BACKEND_CONTRACT_DRAFT.md
-and handoff thread AGENT-002. Observed COM behaviour: docs/com/api-evidence.md.
+and handoff thread AGENT-002. Observed COM behaviour: the api-evidence notes
+(rows such as C2, M1), kept with the development tests outside this package.
 Items marked SPIKE may change after runtime evidence; such a change is a
 reviewed contract change, not a silent edit.
 
@@ -174,7 +175,7 @@ class Capability:
     support: Support
     evidence: Evidence
     evidence_ref: str | None = None
-    """docs/com/api-evidence.md row or probe test id."""
+    """api-evidence row (development notes) or probe test id."""
     note: str | None = None
 
 

@@ -81,7 +81,6 @@ Test Setup listing/editing is supported; test execution, report parsing,
 UDS requests, Tester Present, runtime values, CAPL calls, raw-frame helpers,
 bus edits and baud-rate writes are deferred. A Diagnostic Console opening is
 not proof a UDS request succeeded. Reopening is not proof unsaved changes were
-saved. Use [known limitations](../../docs/com/known-limitations.md) for COM
-behaviour and the [bench checklist](../../docs/validation/bench-checklist.md)
-for licensed/hardware evidence. When copying this skill alone into a client's
-skill directory, resolve those references from the installed server checkout.
+saved. The canoe17-mcp README, section "Limits", lists the CANoe 17
+behaviours to know; read it before write work. When copying this skill alone
+into a client's skill directory, keep that README at hand.

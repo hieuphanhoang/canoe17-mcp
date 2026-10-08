@@ -1,5 +1,5 @@
 # Evidence per backend operation. Reviewed data: change a level only from a
-# probe result recorded in docs/com/api-evidence.md and reviewed by the other
+# probe result recorded in the api-evidence notes and reviewed by the other
 # member. support: implemented | not_implemented | unsupported_by_canoe
 # evidence: documented | demo_verified | bench_verified
 
