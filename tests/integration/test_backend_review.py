@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -122,8 +122,11 @@ def test_expired_job_is_cancelled_when_claimed_not_only_by_watchdog():
     w = StaWorker(StateStore())  # not started: we drive _execute ourselves
     ran: list[bool] = []
     op = w.submit_operation(
-        "compile", lambda step: (step.dispatch(), ran.append(True)), expected_epoch=0,
-        step_s=1, dispatch_timeout_s=10,
+        "compile",
+        lambda step: (step.dispatch(), ran.append(True)),
+        expected_epoch=0,
+        step_s=1,
+        dispatch_timeout_s=10,
     )
     job = w._normal.popleft()
     job.dispatch_deadline = time.monotonic() - 1
@@ -138,8 +141,11 @@ def test_job_queued_before_degraded_is_refused_at_start():
     w = StaWorker(StateStore())
     ran: list[bool] = []
     queued = w.submit_operation(
-        "compile", lambda step: (step.dispatch(), ran.append(True)), expected_epoch=0,
-        step_s=1, dispatch_timeout_s=10,
+        "compile",
+        lambda step: (step.dispatch(), ran.append(True)),
+        expected_epoch=0,
+        step_s=1,
+        dispatch_timeout_s=10,
     )
     other = w.store.new_operation("measurement.start", 0)
     assert w.store.try_start(other.operation_id)
@@ -262,8 +268,11 @@ def test_running_measurement_refused_before_any_side_effect(
 @pytest.mark.parametrize("action", ["open_config", "quit"])
 def test_dirty_save_preview_shows_licence_block(backend: ComBackend, action: str):
     backend.store.update_session(
-        connected=True, configuration_modified=True, licensed=False,
-        configuration_path="C:/x/Demo.cfg", measurement_running=False,
+        connected=True,
+        configuration_modified=True,
+        licensed=False,
+        configuration_path="C:/x/Demo.cfg",
+        measurement_running=False,
     )
     pv = backend.preview(EffectRequest(action, (("on_dirty", "save"), ("path", "C:/x/O.cfg"))))
     assert pv.value.blocked_by is BlockReason.NO_LICENSE
@@ -279,8 +288,11 @@ def test_dirty_save_preview_shows_licence_block(backend: ComBackend, action: str
 @pytest.mark.parametrize("licensed", [True, False])
 def test_preview_blocks_while_measuring(backend: ComBackend, action: str, licensed: bool):
     backend.store.update_session(
-        connected=True, licensed=licensed, measurement_running=True,
-        configuration_modified=True, configuration_path="C:/demo/a.cfg",
+        connected=True,
+        licensed=licensed,
+        measurement_running=True,
+        configuration_modified=True,
+        configuration_path="C:/demo/a.cfg",
     )
     pv = backend.preview(EffectRequest(action, (("on_dirty", "save"),)))
     assert pv.value.blocked_by is BlockReason.MEASUREMENT_RUNNING
@@ -476,9 +488,7 @@ def _stub_attach(backend: ComBackend, app: Any, calls: list[bool]) -> None:
     backend.session.attach = attach  # type: ignore[method-assign]
 
 
-def test_read_attaches_without_touching_a_dirty_configuration(
-    backend: ComBackend, tmp_path: Path
-):
+def test_read_attaches_without_touching_a_dirty_configuration(backend: ComBackend, tmp_path: Path):
     app = FakeApp(cfg_file(tmp_path), modified=True, running=False)
     calls: list[bool] = []
     _stub_attach(backend, app, calls)
@@ -506,9 +516,7 @@ def test_status_and_operation_polling_never_attach(backend: ComBackend, tmp_path
     assert calls == [] and backend.status().connected is False
 
 
-@pytest.mark.parametrize(
-    "code", [ErrorCode.NO_ACTIVE_INSTANCE, ErrorCode.ATTACH_FAILED]
-)
+@pytest.mark.parametrize("code", [ErrorCode.NO_ACTIVE_INSTANCE, ErrorCode.ATTACH_FAILED])
 def test_read_attach_error_propagates_without_fallback(backend: ComBackend, code: ErrorCode):
     from canoe17_mcp.contracts import BackendError
 
@@ -593,3 +601,95 @@ def test_measurement_preview_says_when_traffic_is_unknown(
     pv = backend.preview(EffectRequest("measurement.start"))
     assert pv.value.active_simulation_nodes == ()
     assert any("may transmit are unknown" in n for n in pv.value.notes)
+
+
+# Bench measurement probe never leaves CANoe measuring (review R1, AGENT-008) -------
+
+
+class _MeasuringStub:
+    """Stand-in backend driving the real bench probe; records stop attempts."""
+
+    def __init__(self, stops: list[tuple[str, bool]], start: str = "completed") -> None:
+        self.running = False
+        self.stop_calls = 0
+        self._stops = stops
+        self._start = start
+        self._last: OperationStatus | None = None
+
+    def _op(self, kind: str, state: str, code: ErrorCode | None = None) -> OperationStatus:
+        from canoe17_mcp.contracts import ErrorInfo
+
+        self._last = OperationStatus(
+            "op-000000000000",
+            cast(Any, kind),
+            OpState(state),
+            "t",
+            0,
+            dispatched=state == "completed",
+            error=ErrorInfo(code, "x") if code else None,
+        )
+        return self._last
+
+    def status(self) -> Any:
+        return SimpleNamespace(measurement_running=self.running, epoch=0)
+
+    def measurement_start(self, ctx: Any) -> OperationStatus:
+        if self._start == "completed":
+            self.running = True
+            return self._op("measurement.start", "completed")
+        return self._op("measurement.start", "failed", ErrorCode.LICENSE_REQUIRED)
+
+    def remove_diag_description(self, diag_id: str, ctx: Any) -> OperationStatus:
+        return self._op("diag_description.remove", "failed", ErrorCode.MEASUREMENT_RUNNING)
+
+    def measurement_stop(self, ctx: Any) -> OperationStatus:
+        self.stop_calls += 1
+        state, running_after = self._stops.pop(0)
+        self.running = running_after
+        return self._op("measurement.stop", state)
+
+    def wait(self, operation_id: str, wait_s: float) -> Any:
+        return SimpleNamespace(value=self._last)
+
+
+def _probe(monkeypatch: pytest.MonkeyPatch) -> Any:
+    import test_bench_licensed as probe
+
+    monkeypatch.setattr(probe, "_open", lambda b, cfg, sandbox: None)
+    monkeypatch.setattr(probe, "run", lambda b, op, wait=0: op)
+    monkeypatch.setattr(probe, "ctx", lambda b: None)
+    return probe
+
+
+def _call(probe: Any, stub: _MeasuringStub) -> None:
+    probe.test_measurement_start_stop_confirmed_by_events(stub, Path("w"), Path("s"))
+
+
+def test_bench_probe_success_stops_once(monkeypatch: pytest.MonkeyPatch):
+    probe, stub = _probe(monkeypatch), _MeasuringStub([("completed", False)])
+    _call(probe, stub)
+    assert stub.stop_calls == 1 and stub.running is False
+
+
+def test_bench_probe_retries_after_failed_stop(monkeypatch: pytest.MonkeyPatch):
+    probe = _probe(monkeypatch)
+    stub = _MeasuringStub([("failed", True), ("completed", False)])
+    with pytest.raises(AssertionError):  # the original failure is reported
+        _call(probe, stub)
+    assert stub.stop_calls == 2 and stub.running is False  # cleanup stopped it
+
+
+def test_bench_probe_fails_loudly_when_still_running(monkeypatch: pytest.MonkeyPatch):
+    probe = _probe(monkeypatch)
+    stub = _MeasuringStub([("completed", True), ("completed", True)])
+    with pytest.raises(pytest.fail.Exception, match="CLEANUP FAILED"):
+        _call(probe, stub)
+    assert stub.stop_calls == 2
+
+
+def test_bench_probe_no_stop_when_start_failed(monkeypatch: pytest.MonkeyPatch):
+    probe = _probe(monkeypatch)
+    stub = _MeasuringStub([], start="failed")
+    with pytest.raises(AssertionError):
+        _call(probe, stub)
+    assert stub.stop_calls == 0  # explicitly stopped: nothing to clean up

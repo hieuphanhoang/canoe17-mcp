@@ -23,6 +23,7 @@ from test_com_live import ctx, error_code, result_as, run
 
 from canoe17_mcp.com.backend import ComBackend
 from canoe17_mcp.contracts import (
+    BackendError,
     BackendSettings,
     DiagDescriptionInfo,
     ErrorCode,
@@ -122,12 +123,34 @@ def test_on_dirty_save_saves_with_backup_before_opening(
     assert "Door_1" in [d.qualifier for d in b.diag_descriptions().value]
 
 
+def ensure_measurement_stopped(b: ComBackend) -> None:
+    """Bounded cleanup: make sure no measurement is left running on the bench.
+
+    Does nothing only when CANoe reports the measurement explicitly stopped
+    (``measurement_running is False``); unknown counts as possibly running.
+    Otherwise one stop is attempted; if that cannot be confirmed, the test fails
+    loudly so the operator stops it by hand.
+    """
+    if b.status().measurement_running is False:
+        return
+    outcome: object
+    try:
+        outcome = b.wait(b.measurement_stop(ctx(b)).operation_id, 60).value
+    except BackendError as exc:  # e.g. degraded: refused before queuing
+        outcome = exc
+    if b.status().measurement_running is not False:
+        pytest.fail(
+            f"CLEANUP FAILED: measurement may still be running in CANoe; stop it by hand. "
+            f"Last stop attempt: {outcome!r}"
+        )
+
+
 def test_measurement_start_stop_confirmed_by_events(
     licensed_backend: ComBackend, workdir: Path, sandbox: Path
 ):
     b = licensed_backend
     _open(b, workdir / "UDSBasic.cfg", sandbox)
-    stopped = None
+    confirmed_stopped = False
     try:
         started = run(b, b.measurement_start(ctx(b)), wait=60)
         assert started.state is OpState.COMPLETED, started.error
@@ -138,12 +161,10 @@ def test_measurement_start_stop_confirmed_by_events(
         stopped = run(b, b.measurement_stop(ctx(b)), wait=60)
         assert stopped.state is OpState.COMPLETED, stopped.error
         assert b.status().measurement_running is False
+        confirmed_stopped = True
     finally:
-        # Never leave a measurement running on the bench, whatever failed above
-        # (including a start that did not complete).
-        if stopped is None and b.status().measurement_running is not False:
-            cleanup = b.wait(b.measurement_stop(ctx(b)).operation_id, 60).value
-            if cleanup.state is not OpState.COMPLETED or b.status().measurement_running:
-                pytest.fail(
-                    f"CLEANUP FAILED: measurement may still be running in CANoe: {cleanup}"
-                )
+        # Cleanup depends on a confirmed stop, not on a stop having been attempted
+        # (review R1): a failed stop or a measurement still running gets one more
+        # bounded stop, or a loud CLEANUP FAILED.
+        if not confirmed_stopped:
+            ensure_measurement_stopped(b)
