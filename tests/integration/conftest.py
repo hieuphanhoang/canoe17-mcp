@@ -4,6 +4,15 @@ Run with ``CANOE17_MCP_PROBE=1`` and ``CANOE17_MCP_SANDBOX=<folder>`` where the
 folder holds a *copy* of the CANoe ``UDSBasic`` sample (``UDSBasic/UDSBasic.cfg``)
 and of ``Easy`` (``Easy/Easy.cfg``). Never point it at original samples or
 customer projects. Missing prerequisites skip; automation failures fail.
+
+Bench profile (for a PC with a **licensed** CANoe, e.g. the test bench):
+add ``CANOE17_MCP_BENCH=1``. Probes marked ``licensed`` then run for real
+(save-copy with backup and persistence, saving before an open, measurement
+start/stop events); without it they skip. They still use only the sandbox
+copies. Nothing here needs Vector hardware yet: UDS, Tester Present, values
+and frames are not implemented in the backend, so there is no hardware probe.
+Report the run with ``pytest -m canoe -rA`` output and docs/com/api-evidence.md
+rows for anything that differs.
 """
 
 from __future__ import annotations
@@ -17,6 +26,16 @@ import pytest
 
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "canoe: needs a live CANoe 17 (opt-in, see conftest)")
+    config.addinivalue_line(
+        "markers", "licensed: needs a licensed CANoe; runs only with CANOE17_MCP_BENCH=1"
+    )
+
+
+@pytest.fixture(scope="session")
+def bench() -> None:
+    """Skip unless the bench profile is on (a licensed CANoe)."""
+    if os.environ.get("CANOE17_MCP_BENCH") != "1":
+        pytest.skip("licensed probe: set CANOE17_MCP_BENCH=1 on a PC with a CANoe licence")
 
 
 @pytest.fixture(scope="session")
