@@ -9,10 +9,16 @@ import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, fields
+from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import Any
 
 from .contracts import REAL_EVIDENCE_ORDER, BackendSettings, Evidence
+
+
+def _audit_path() -> Path:
+    base = os.environ.get("LOCALAPPDATA")
+    return (Path(base) if base else Path.home() / ".local" / "share") / "canoe17-mcp/audit.jsonl"
 
 
 def validate_backend(settings: BackendSettings) -> None:
@@ -48,8 +54,18 @@ class Settings:
     backend_kind: str = "com"
     fake_config_paths: tuple[Path, ...] = ()
     fake_licensed: bool = False
+    audit_path: Path = dataclass_field(default_factory=_audit_path)
+    audit_max_bytes: int = 1_048_576
+    audit_backup_count: int = 2
 
     def __post_init__(self) -> None:
+        if not isinstance(self.audit_path, Path) or not self.audit_path.is_absolute():
+            raise ValueError("audit_path must be an absolute path")
+        object.__setattr__(self, "audit_path", self.audit_path.resolve())
+        if type(self.audit_max_bytes) is not int or not 4096 <= self.audit_max_bytes <= 104_857_600:
+            raise ValueError("audit_max_bytes must be 4096..104857600")
+        if type(self.audit_backup_count) is not int or not 0 <= self.audit_backup_count <= 10:
+            raise ValueError("audit_backup_count must be 0..10")
         if not isinstance(self.backend_kind, str) or self.backend_kind not in {"com", "fake"}:
             raise ValueError("backend_kind must be com or fake")
         if type(self.fake_licensed) is not bool:
@@ -97,6 +113,9 @@ def load_settings(
         "backend_kind",
         "fake_config_paths",
         "fake_licensed",
+        "audit_path",
+        "audit_max_bytes",
+        "audit_backup_count",
     }
     unknown = set(data) - server_names - {"backend"}
     if unknown:
@@ -112,7 +131,7 @@ def load_settings(
         if key in env:
             value = (
                 env[key]
-                if name in {"lock_key", "min_evidence", "backend_kind"}
+                if name in {"lock_key", "min_evidence", "backend_kind", "audit_path"}
                 else json.loads(env[key])
             )
             (backend if name in backend_names else data)[name] = value
@@ -129,6 +148,9 @@ def load_settings(
     if not isinstance(fake_paths, list) or any(not isinstance(p, str) or not p for p in fake_paths):
         raise ValueError("fake_config_paths must be an array of nonempty paths")
     try:
+        audit_path = data.get("audit_path")
+        if audit_path is not None and (not isinstance(audit_path, str) or not audit_path):
+            raise ValueError("audit_path must be a nonempty path")
         return Settings(
             read_only=data.get("read_only", True),
             allowed_roots=tuple(Path(p) for p in roots),
@@ -136,6 +158,9 @@ def load_settings(
             backend_kind=data.get("backend_kind", "com"),
             fake_config_paths=tuple(Path(p) for p in fake_paths),
             fake_licensed=data.get("fake_licensed", False),
+            audit_path=Path(audit_path) if audit_path is not None else _audit_path(),
+            audit_max_bytes=data.get("audit_max_bytes", 1_048_576),
+            audit_backup_count=data.get("audit_backup_count", 2),
         )
     except TypeError as exc:
         raise ValueError(f"Invalid backend setting: {exc}") from exc

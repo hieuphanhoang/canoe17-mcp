@@ -22,6 +22,7 @@ from mcp import types
 from mcp.server.fastmcp import FastMCP
 
 from . import contracts as c
+from .audit import AuditLog, Ticket
 from .catalogue import Catalogue
 from .safety import SafetyPolicy
 from .settings import Settings, load_settings
@@ -42,7 +43,18 @@ _ACTIONS: dict[str, dict[str, str | None]] = {
         "stop": "measurement.stop",
     },
     "canoe_operation": {"status": None, "cancel": None},
-    "canoe_database": {"list": "database.list", "set_channel": "database.set_channel"},
+    "canoe_database": {
+        action: f"database.{action}" for action in ("list", "add", "remove", "set_channel")
+    },
+    "canoe_node": {
+        action: f"node.{action}"
+        for action in ("list", "add", "remove", "set_active", "attach_bus", "detach_bus")
+    },
+    "canoe_test_setup": {
+        action: f"test_setup.{action}"
+        for action in ("list", "add_environment", "add_module", "set_enabled")
+    },
+    "canoe_can_controller": {"read": "can_controller.read"},
     "canoe_diag_description": {
         action: f"diag_description.{action}"
         for action in ("list", "add", "remove", "open_windows", "close_windows")
@@ -88,6 +100,7 @@ class ToolService:
         self.backend = backend
         self.settings = settings
         self.policy = SafetyPolicy(backend, settings)
+        self.audit = AuditLog(settings)
         self.catalogue = Catalogue(maximum_timeout_s=settings.backend.operation_max_timeout_s)
         self.actions: dict[str, dict[str, str | None]] = {}
         self.definitions: list[types.Tool] = []
@@ -159,6 +172,12 @@ class ToolService:
             return self._remember(self.backend.summary(args.get("section", "all")))
         if name == "canoe_database":
             return self._remember(self.backend.databases())
+        if name == "canoe_node":
+            return self._remember(self.backend.nodes())
+        if name == "canoe_test_setup":
+            return self._remember(self.backend.test_setup())
+        if name == "canoe_can_controller":
+            return self._remember(self.backend.can_controller(args["bus"], args["channel"]))
         if name == "canoe_diag_description":
             return self._remember(self.backend.diag_descriptions())
         if name == "canoe_write_window":
@@ -189,8 +208,47 @@ class ToolService:
         if name == "canoe_measurement":
             return {}, b.measurement_start if action == "start" else b.measurement_stop
         if name == "canoe_database":
+            if action == "add":
+                params = {
+                    "path": self.policy.allowed_path(args["path"]),
+                    "bus": args["bus"], "channel": args["channel"],
+                }
+                return params, lambda ctx: b.add_database(**params, ctx=ctx)
+            if action == "remove":
+                identifier = args["database_id"]
+                return {"database_id": identifier}, lambda ctx: b.remove_database(identifier, ctx)
             params = {"database_id": args["database_id"], "channel": args["channel"]}
             return params, lambda ctx: b.set_database_channel(**params, ctx=ctx)
+        if name == "canoe_node":
+            if action == "add":
+                params = {
+                    "name": args["name"], "bus": args["bus"],
+                    "capl_path": self.policy.allowed_path(args["capl_path"])
+                    if "capl_path" in args else None,
+                }
+                return params, lambda ctx: b.add_node(**params, ctx=ctx)
+            identifier = args["node_id"]
+            if action == "remove":
+                return {"node_id": identifier}, lambda ctx: b.remove_node(identifier, ctx)
+            if action == "set_active":
+                params = {"node_id": identifier, "active": args["active"]}
+                return params, lambda ctx: b.set_node_active(**params, ctx=ctx)
+            params = {"node_id": identifier, "bus": args["bus"]}
+            return params, lambda ctx: b.attach_node_bus(
+                **params, attach=action == "attach_bus", ctx=ctx
+            )
+        if name == "canoe_test_setup":
+            if action == "add_environment":
+                params = {"tse_path": self.policy.allowed_path(args["tse_path"])}
+                return params, lambda ctx: b.add_test_environment(**params, ctx=ctx)
+            if action == "add_module":
+                params = {
+                    "environment_id": args["environment_id"],
+                    "can_path": self.policy.allowed_path(args["can_path"]),
+                }
+                return params, lambda ctx: b.add_test_module(**params, ctx=ctx)
+            params = {"module_id": args["module_id"], "enabled": args["enabled"]}
+            return params, lambda ctx: b.set_test_module_enabled(**params, ctx=ctx)
         if name == "canoe_diag_description":
             if action == "add":
                 params = {
@@ -218,6 +276,36 @@ class ToolService:
 
     def invoke(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         args, write = self.catalogue.validate(name, arguments)
+        ticket = None
+        if write and args["confirm"]:
+            try:
+                ticket = self.audit.begin(name, args, self.settings.backend_kind)
+            except OSError as exc:
+                raise c.BackendError(
+                    c.ErrorCode.CAPABILITY_UNAVAILABLE,
+                    "Audit log unavailable; no effect dispatched",
+                ) from exc
+        try:
+            payload = self._invoke(name, args, write, ticket)
+        except Exception as exc:
+            if ticket is not None:
+                self.audit.finish_error(ticket, exc)
+            raise
+        if ticket is not None:
+            if not self.audit.finish(ticket, payload["result"]):
+                payload["audit_error"] = "Outcome logging failed; effect may already have occurred"
+            operation = payload["result"].get("operation")
+            if operation and name == "canoe_operation":
+                if not self.audit.observe(operation):
+                    payload["audit_error"] = "Operation outcome logging failed"
+        elif name == "canoe_operation" and args.get("action") == "status":
+            if not self.audit.observe(payload["result"]["value"]):
+                payload["audit_error"] = "Operation outcome logging failed"
+        return payload
+
+    def _invoke(
+        self, name: str, args: dict[str, Any], write: bool, ticket: Ticket | None
+    ) -> dict[str, Any]:
         action = args.get("action", next(iter(self.catalogue.tools[name]["actions"])))
         if name not in self.actions or action not in self.actions[name]:
             raise c.BackendError(
@@ -240,6 +328,8 @@ class ToolService:
                     wait_s=0,
                 )
                 if result.operation is not None:
+                    if ticket is not None:
+                        self.audit.finish(ticket, {"operation": plain(result.operation)})
                     observed = self.backend.wait(
                         result.operation.operation_id, self.settings.wait_seconds(None)
                     )

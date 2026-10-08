@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+import json
 from dataclasses import replace
 from pathlib import Path
 from threading import Event
@@ -17,7 +18,10 @@ from canoe17_mcp.settings import Settings
 
 @pytest.fixture
 def service(tmp_path: Path) -> ToolService:
-    settings = Settings(read_only=False, allowed_roots=(tmp_path,), backend_kind="fake")
+    settings = Settings(
+        read_only=False, allowed_roots=(tmp_path,), backend_kind="fake",
+        audit_path=tmp_path / "audit.jsonl",
+    )
     backend = FakeBackend(
         configurations=(
             FakeConfiguration(
@@ -49,14 +53,17 @@ def test_fake_discovery_narrows_actions_and_never_registers_catalogue_blindly(
         "canoe_database",
         "canoe_diag_description",
         "canoe_write_window",
+        "canoe_node",
+        "canoe_test_setup",
+        "canoe_can_controller",
     }
     database = definitions["canoe_database"].inputSchema
-    assert database["properties"]["action"]["enum"] == ["list", "set_channel"]
-    assert "path" not in database["properties"]
+    assert database["properties"]["action"]["enum"] == ["list", "add", "remove", "set_channel"]
+    assert "path" in database["properties"]
     for definition in definitions.values():
         assert not {"oneOf", "anyOf", "allOf"} & definition.inputSchema.keys()
     with pytest.raises(c.BackendError) as exc:
-        service.invoke("canoe_database", {"action": "remove", "database_id": "db:Demo"})
+        service.invoke("canoe_bus", {"action": "remove", "bus_id": "bus:CAN"})
     assert exc.value.code == c.ErrorCode.CAPABILITY_UNAVAILABLE
 
 
@@ -287,3 +294,200 @@ async def test_status_and_control_remain_responsive_while_mutation_waits(
             release.set()
     assert responses[0].structuredContent is not None
     assert responses[0].structuredContent["result"]["operation"]["state"] == "cancelled"
+
+
+def test_edit_adapters_preview_then_complete_and_read_back(service: ToolService) -> None:
+    root = service.settings.allowed_roots[0]
+
+    def edit(tool: str, args: dict[str, Any]) -> Any:
+        preview = service.invoke(tool, args)["result"]
+        assert preview["needs_confirmation"] and preview["operation"] is None
+        result = service.invoke(tool, {**args, "confirm": True})["result"]["operation"]
+        assert result["state"] == "completed", result
+        return result["result"]
+
+    node = edit("canoe_node", {
+        "action": "add", "name": "ECU", "bus": "CAN", "capl_path": str(root / "ECU.can"),
+    })
+    assert node["capl_path"] == str(root / "ECU.can") and node["buses"] == ["CAN"]
+    node_id = node["id"]
+    assert service.invoke("canoe_node", {"action": "list"})["result"]["value"] == [node]
+    edit("canoe_node", {"action": "attach_bus", "node_id": node_id, "bus": "CAN2"})
+    updated = edit("canoe_node", {"action": "detach_bus", "node_id": node_id, "bus": "CAN"})
+    assert updated["buses"] == ["CAN2"]
+    updated = edit("canoe_node", {"action": "set_active", "node_id": node_id, "active": False})
+    assert not updated["active"]
+    assert edit("canoe_node", {"action": "remove", "node_id": node_id}) == {"id": node_id}
+    assert service.invoke("canoe_node", {"action": "list"})["result"]["value"] == []
+    no_path = edit("canoe_node", {"action": "add", "name": "Empty", "bus": "CAN"})
+    assert no_path["capl_path"] is None
+
+    database = edit("canoe_database", {
+        "action": "add", "path": str(root / "New.dbc"), "bus": "CAN", "channel": 2,
+    })
+    assert database["channel"] == 2 and database["path"] == str(root / "New.dbc")
+    listed = service.invoke("canoe_database", {"action": "list"})["result"]["value"]
+    assert database in listed
+    edit("canoe_database", {"action": "remove", "database_id": database["id"]})
+    assert len(service.invoke("canoe_database", {"action": "list"})["result"]["value"]) == 1
+
+    env = edit("canoe_test_setup", {"action": "add_environment", "tse_path": str(root / "A.tse")})
+    module = edit("canoe_test_setup", {
+        "action": "add_module", "environment_id": env["id"], "can_path": str(root / "Test.can"),
+    })
+    edit("canoe_test_setup", {"action": "set_enabled", "module_id": module["id"], "enabled": False})
+    setup = service.invoke("canoe_test_setup", {"action": "list"})["result"]["value"]
+    assert setup["environments"][0]["modules"][0]["enabled"] is False
+
+
+@pytest.mark.parametrize("tool,args,key", [
+    ("canoe_node", {"action": "add", "name": "ECU", "bus": "CAN"}, "capl_path"),
+    ("canoe_database", {"action": "add", "bus": "CAN", "channel": 1}, "path"),
+    ("canoe_test_setup", {"action": "add_environment"}, "tse_path"),
+    ("canoe_test_setup", {"action": "add_module", "environment_id": "env:A"}, "can_path"),
+])
+def test_edit_source_paths_refused_before_queue(
+    service: ToolService, tool: str, args: dict[str, Any], key: str,
+) -> None:
+    assert isinstance(service.backend, FakeBackend)
+    before = len(service.backend._ops)
+    outside = str(service.settings.allowed_roots[0].parent / "outside.can")
+    for confirm in (False, True):
+        with pytest.raises(c.BackendError) as raised:
+            service.invoke(tool, {**args, key: outside, "confirm": confirm})
+        assert raised.value.code == c.ErrorCode.PATH_NOT_ALLOWED
+    assert len(service.backend._ops) == before
+
+
+def test_controller_read_is_registered_in_readonly_mode(service: ToolService) -> None:
+    readonly = ToolService(service.backend, replace(service.settings, read_only=True))
+    definition = next(t for t in readonly.definitions if t.name == "canoe_can_controller")
+    assert definition.inputSchema["properties"]["action"]["enum"] == ["read"]
+    assert "bitrate_bps" not in definition.inputSchema["properties"]
+    result = readonly.invoke("canoe_can_controller", {"action": "read", "bus": "CAN", "channel": 1})
+    assert result["result"]["value"]["bitrate_bps"] == 500_000
+    assert not service.settings.audit_path.exists()
+
+
+@pytest.mark.parametrize("tool,args", [
+    ("canoe_node", {"action": "remove", "node_id": "node:ECU"}),
+    ("canoe_test_setup", {"action": "set_enabled", "module_id": "tm:A/Test", "enabled": False}),
+])
+def test_new_edit_cached_previews_cannot_cross_epochs(
+    service: ToolService, tool: str, args: dict[str, Any],
+) -> None:
+    service.invoke(tool, args)
+    assert isinstance(service.backend, FakeBackend)
+    service.backend.simulate_gui_open(str(service.settings.allowed_roots[0] / "demo.cfg"))
+    op = service.invoke(tool, {**args, "confirm": True})["result"]["operation"]
+    assert op["error"]["code"] == "stale_session" and not op["dispatched"]
+
+
+def test_audit_refusals_errors_and_pending_resolution(service: ToolService) -> None:
+    path = service.settings.audit_path
+    service.invoke("canoe_compile", {})
+    assert not path.exists()
+    service.invoke("canoe_compile", {"confirm": True})
+    readonly = ToolService(service.backend, replace(service.settings, read_only=True))
+    with pytest.raises(c.BackendError):
+        readonly.invoke("canoe_compile", {"confirm": True})
+    assert isinstance(service.backend, FakeBackend)
+    service.backend.hold_next_step()
+    op = service.invoke("canoe_compile", {"confirm": True})["result"]["operation"]
+    assert op["state"] == "running"
+    service.backend.resolve_held()
+    service.invoke("canoe_operation", {"action": "status", "operation_id": op["operation_id"]})
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    assert any(row["result"].get("error_code") == "read_only_mode" for row in rows)
+    assert rows[-1]["result"]["state"] == "completed"
+    assert rows[-1]["result"]["operation_id"] == op["operation_id"]
+    assert not service.audit._pending
+
+
+def test_audit_failure_blocks_dispatch_and_preserves_late_effects(
+    service: ToolService, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert isinstance(service.backend, FakeBackend)
+    before = len(service.backend._ops)
+    original = service.audit._append
+
+    def fail(*args: Any) -> None:
+        raise OSError("secret failure message")
+
+    monkeypatch.setattr(service.audit, "_append", fail)
+    with pytest.raises(c.BackendError, match="no effect dispatched"):
+        service.invoke("canoe_compile", {"confirm": True})
+    assert len(service.backend._ops) == before
+
+    def fail_outcomes(ticket: Any, result: dict[str, Any]) -> None:
+        if result["state"] == "attempt":
+            original(ticket, result)
+        else:
+            fail()
+
+    monkeypatch.setattr(service.audit, "_append", fail_outcomes)
+    result = service.invoke("canoe_compile", {"confirm": True})
+    assert result["result"]["operation"]["state"] == "completed"
+    assert "audit_error" in result
+
+
+def test_real_manifest_registers_only_verified_edits(
+    service: ToolService, monkeypatch: Any,
+) -> None:
+    from canoe17_mcp.com.backend import load_evidence
+
+    monkeypatch.setattr(service.backend, "capabilities", lambda: tuple(load_evidence().values()))
+    filtered = ToolService(service.backend, replace(service.settings, backend_kind="com"))
+    assert set(filtered.actions["canoe_database"]) == {"list", "add", "remove"}
+    assert set(filtered.actions["canoe_node"]) == {
+        "list", "add", "remove", "set_active", "attach_bus", "detach_bus",
+    }
+    assert set(filtered.actions["canoe_test_setup"]) == {
+        "list", "add_environment", "add_module", "set_enabled",
+    }
+    assert set(filtered.actions["canoe_can_controller"]) == {"read"}
+    assert "canoe_bus" not in filtered.actions
+
+
+def test_audit_records_unknown_then_late_completion(
+    service: ToolService, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert isinstance(service.backend, FakeBackend)
+    now = [service.backend._clock()]
+    monkeypatch.setattr(service.backend, "_clock", lambda: now[0])
+    service.backend.hold_next_step()
+    op = service.invoke("canoe_compile", {"confirm": True})["result"]["operation"]
+    now[0] += service.backend.settings.compile_step_s + 1
+    polled = service.invoke("canoe_operation", {
+        "action": "status", "operation_id": op["operation_id"],
+    })
+    assert polled["result"]["value"]["state"] == "outcome_unknown"
+    rows = [json.loads(line) for line in service.settings.audit_path.read_text().splitlines()]
+    assert rows[-1]["result"]["state"] == "outcome_unknown"
+    assert rows[-1]["result"]["effects_possible"]
+    service.backend.resolve_held()
+    service.invoke("canoe_operation", {"action": "status", "operation_id": op["operation_id"]})
+    rows = [json.loads(line) for line in service.settings.audit_path.read_text().splitlines()]
+    assert rows[-1]["result"]["state"] == "completed"
+    assert not service.audit._pending
+
+
+def test_audit_failed_outcome_can_be_recovered_by_polling(
+    service: ToolService, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = service.audit._append
+
+    def fail_outcome(ticket: Any, result: dict[str, Any]) -> None:
+        if result["state"] != "attempt":
+            raise OSError("blocked")
+        original(ticket, result)
+
+    monkeypatch.setattr(service.audit, "_append", fail_outcome)
+    result = service.invoke("canoe_compile", {"confirm": True})
+    assert "audit_error" in result
+    monkeypatch.setattr(service.audit, "_append", original)
+    op = result["result"]["operation"]
+    service.invoke("canoe_operation", {"action": "status", "operation_id": op["operation_id"]})
+    rows = [json.loads(line) for line in service.settings.audit_path.read_text().splitlines()]
+    assert rows[-1]["result"]["state"] == "completed"
+    assert not service.audit._pending

@@ -7,6 +7,10 @@ allowed_roots = []
 # Fake mode models only these in-memory configurations; no files are created/read.
 fake_config_paths = []
 fake_licensed = false
+# Optional absolute audit_path; default: %LOCALAPPDATA%/canoe17-mcp/audit.jsonl.
+# Environment override CANOE17_MCP_AUDIT_PATH is a plain path string.
+audit_max_bytes = 1048576
+audit_backup_count = 2
 
 [backend]
 lock_key = "default"

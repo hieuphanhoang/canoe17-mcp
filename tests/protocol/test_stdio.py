@@ -26,6 +26,7 @@ async def client(tmp_path: Path, *, read_only: bool = False) -> AsyncIterator[Cl
         f"read_only = {str(read_only).lower()}\n"
         f"allowed_roots = {json.dumps([str(tmp_path)])}\n"
         f"fake_config_paths = {json.dumps([path])}\n"
+        f"audit_path = {json.dumps(str(tmp_path / 'audit.jsonl'))}\n"
         "fake_licensed = true\n",
         encoding="utf-8",
     )
@@ -55,9 +56,11 @@ async def test_stdio_initialize_discovery_read_preview_confirm_poll(tmp_path: Pa
     async with client(tmp_path) as session:
         listing = await session.list_tools()
         tools = {tool.name: tool for tool in listing.tools}
-        assert len(tools) == 11
+        assert len(tools) == 14
         assert tools["canoe_database"].inputSchema["properties"]["action"]["enum"] == [
             "list",
+            "add",
+            "remove",
             "set_channel",
         ]
         for tool in listing.tools:
@@ -104,8 +107,8 @@ async def test_stdio_structured_policy_validation_and_unavailable_errors(tmp_pat
             ("canoe_open_config", {"path": "relative.cfg"}, "path_not_allowed"),
             ("canoe_compile", {"confirm": "true"}, "invalid_argument"),
             (
-                "canoe_database",
-                {"action": "remove", "database_id": "db:X"},
+                "canoe_bus",
+                {"action": "remove", "bus_id": "bus:X"},
                 "capability_unavailable",
             ),
             ("canoe_write_window", {"action": "read", "max_chars": 65537}, "invalid_argument"),
@@ -125,3 +128,37 @@ async def test_stdio_readonly_rejects_preview_and_confirm(tmp_path: Path) -> Non
             result = await session.call_tool("canoe_compile", {"confirm": confirm})
             assert result.isError
             assert payload(result)["error"]["code"] == "read_only_mode"
+
+
+@pytest.mark.anyio
+async def test_stdio_new_edits_and_audit(tmp_path: Path) -> None:
+    async with client(tmp_path) as session:
+        await session.call_tool("canoe_open_config", {
+            "path": str(tmp_path / "demo.cfg"), "confirm": True,
+        })
+        args = {"action": "add", "name": "ECU-secret", "bus": "CAN"}
+        preview = await session.call_tool("canoe_node", args)
+        assert payload(preview)["result"]["needs_confirmation"]
+        added = await session.call_tool("canoe_node", {**args, "confirm": True})
+        assert not added.isError
+        node = payload(added)["result"]["operation"]["result"]
+        listing = await session.call_tool("canoe_node", {"action": "list"})
+        assert payload(listing)["result"]["value"][0]["id"] == node["id"]
+        removed = await session.call_tool("canoe_node", {
+            "action": "remove", "node_id": node["id"], "confirm": True,
+        })
+        assert payload(removed)["result"]["operation"]["state"] == "completed"
+        environment = await session.call_tool("canoe_test_setup", {
+            "action": "add_environment", "tse_path": str(tmp_path / "Test.tse"), "confirm": True,
+        })
+        assert payload(environment)["result"]["operation"]["state"] == "completed"
+        controller = await session.call_tool("canoe_can_controller", {
+            "action": "read", "bus": "CAN", "channel": 1,
+        })
+        assert payload(controller)["result"]["value"]["bitrate_bps"] == 500_000
+    text = (tmp_path / "audit.jsonl").read_text()
+    assert "secret" not in text
+    rows = [json.loads(line) for line in text.splitlines()]
+    assert {row["tool"] for row in rows} == {
+        "canoe_open_config", "canoe_node", "canoe_test_setup",
+    }

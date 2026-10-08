@@ -62,6 +62,8 @@ _IMPLEMENTED = (
     "measurement.start",
     "measurement.stop",
     "database.list",
+    "database.add",
+    "database.remove",
     "database.set_channel",
     "diag_description.list",
     "diag_description.add",
@@ -69,23 +71,24 @@ _IMPLEMENTED = (
     "diag_description.open_windows",
     "diag_description.close_windows",
     "node.set_active",
+    "node.list",
+    "node.add",
+    "node.remove",
+    "node.attach_bus",
+    "node.detach_bus",
+    "can_controller.read",
+    "test_setup.list",
+    "test_setup.add_environment",
+    "test_setup.add_module",
+    "test_setup.set_enabled",
     "write_window.read",
     "write_window.clear",
     "summary",
 )
 _EXTENSIONS = (
-    "database.add",
-    "database.remove",
     "bus.add",
     "bus.remove",
-    "node.add",
-    "node.remove",
-    "node.attach_bus",
-    "node.detach_bus",
     "can_controller.set_bitrate",
-    "test_setup.add_environment",
-    "test_setup.add_module",
-    "test_setup.set_enabled",
     "test_run",
     "diag_request",
     "tester_present.start",
@@ -325,7 +328,11 @@ class FakeBackend:
             "measurement.stop",
         }:
             return c.BlockReason.NO_LICENSE
-        if self._measurement and action in {"open_config", "save_config", "quit"}:
+        if self._measurement and (
+            action in {"open_config", "save_config", "quit", "compile"}
+            or action.startswith(("database.", "node.", "test_setup."))
+            and not action.endswith(".list")
+        ):
             return c.BlockReason.MEASUREMENT_RUNNING
         return None
 
@@ -566,7 +573,7 @@ class FakeBackend:
                 diag_descriptions=self._issued(config.diagnostics)
                 if section in {"all", "diagnostics"}
                 else (),
-                test_setup=config.tests if section in {"all", "tests"} else None,
+                test_setup=self.test_setup().value if section in {"all", "tests"} else None,
             )
         )
 
@@ -583,7 +590,10 @@ class FakeBackend:
         return self._observed(self._issued(self._need_config().diagnostics))
 
     def test_setup(self) -> c.Observed[c.TestSetupInfo]:
-        return self._observed(self._need_config().tests)
+        setup = self._need_config().tests
+        self._issued(setup.environments)
+        self._issued(tuple(module for env in setup.environments for module in env.modules))
+        return self._observed(setup)
 
     def set_database_channel(
         self, database_id: str, channel: int, ctx: c.CallContext
@@ -756,10 +766,39 @@ class FakeBackend:
     def add_database(
         self, path: str, bus: str, channel: int, ctx: c.CallContext
     ) -> c.OperationStatus:
-        self._unsupported()
+        def check() -> None:
+            self._stopped()
+            if any(item.path == path and item.bus == bus for item in self._need_config().databases):
+                raise c.BackendError(c.ErrorCode.ALREADY_EXISTS, "Database already loaded")
+
+        def effect() -> c.DatabaseInfo:
+            config = self._need_config()
+            name = Path(path).stem
+            item = c.DatabaseInfo(
+                "db:" + c.escape_id_segment(bus) + "/" + c.escape_id_segment(name),
+                name, path, channel, bus,
+            )
+            if any(entry.id == item.id for entry in config.databases):
+                raise c.BackendError(c.ErrorCode.ALREADY_EXISTS, "Database name already loaded")
+            self._config = replace(config, modified=True, databases=config.databases + (item,))
+            return item
+
+        return self._submit("database.add", ctx, effect, check)
 
     def remove_database(self, database_id: str, ctx: c.CallContext) -> c.OperationStatus:
-        self._unsupported()
+        def check() -> None:
+            self._stopped()
+            self._find(self._need_config().databases, database_id)
+
+        def effect() -> c.Removed:
+            config = self._need_config()
+            item = self._find(config.databases, database_id)
+            self._config = replace(
+                config, modified=True, databases=tuple(x for x in config.databases if x != item)
+            )
+            return c.Removed(database_id)
+
+        return self._submit("database.remove", ctx, effect, check)
 
     def add_bus(self, name: str, bus_type: Literal["CAN"], ctx: c.CallContext) -> c.OperationStatus:
         self._unsupported()
@@ -770,18 +809,60 @@ class FakeBackend:
     def add_node(
         self, name: str, bus: str, capl_path: str | None, ctx: c.CallContext
     ) -> c.OperationStatus:
-        self._unsupported()
+        def check() -> None:
+            self._stopped()
+            if any(item.name == name for item in self._need_config().nodes):
+                raise c.BackendError(c.ErrorCode.ALREADY_EXISTS, "Node already exists")
+
+        def effect() -> c.NodeInfo:
+            config = self._need_config()
+            item = c.NodeInfo("node:" + c.escape_id_segment(name), name, True, capl_path, (bus,))
+            self._config = replace(config, modified=True, nodes=config.nodes + (item,))
+            return item
+
+        return self._submit("node.add", ctx, effect, check)
 
     def remove_node(self, node_id: str, ctx: c.CallContext) -> c.OperationStatus:
-        self._unsupported()
+        def check() -> None:
+            self._stopped()
+            self._find(self._need_config().nodes, node_id)
+
+        def effect() -> c.Removed:
+            config = self._need_config()
+            item = self._find(config.nodes, node_id)
+            self._config = replace(
+                config, modified=True, nodes=tuple(x for x in config.nodes if x != item)
+            )
+            return c.Removed(node_id)
+
+        return self._submit("node.remove", ctx, effect, check)
 
     def attach_node_bus(
         self, node_id: str, bus: str, attach: bool, ctx: c.CallContext
     ) -> c.OperationStatus:
-        self._unsupported()
+        def check() -> None:
+            self._stopped()
+            self._find(self._need_config().nodes, node_id)
+
+        def effect() -> c.NodeInfo:
+            config = self._need_config()
+            old = self._find(config.nodes, node_id)
+            buses = old.buses + (bus,) if attach and bus not in old.buses else old.buses
+            if not attach:
+                buses = tuple(name for name in buses if name != bus)
+            new = replace(old, buses=buses)
+            self._config = replace(
+                config, modified=True, nodes=tuple(new if x == old else x for x in config.nodes)
+            )
+            return new
+
+        return self._submit("node.attach_bus" if attach else "node.detach_bus", ctx, effect, check)
 
     def can_controller(self, bus: str, channel: int) -> c.Observed[c.CanControllerInfo]:
-        self._unsupported()
+        self._need_config()
+        if not bus or type(channel) is not int or channel < 1:
+            raise c.BackendError(c.ErrorCode.INVALID_ARGUMENT, "Invalid controller selector")
+        return self._observed(c.CanControllerInfo(bus, channel, 500_000, 500.0))
 
     def set_can_bitrate(
         self, bus: str, channel: int, bitrate_bps: int, ctx: c.CallContext
@@ -789,17 +870,78 @@ class FakeBackend:
         self._unsupported()
 
     def add_test_environment(self, tse_path: str, ctx: c.CallContext) -> c.OperationStatus:
-        self._unsupported()
+        def check() -> None:
+            self._stopped()
+            if any(env.path == tse_path for env in self._need_config().tests.environments):
+                raise c.BackendError(c.ErrorCode.ALREADY_EXISTS, "Environment already exists")
+
+        def effect() -> c.TestEnvironmentInfo:
+            config = self._need_config()
+            name = Path(tse_path).stem
+            item = c.TestEnvironmentInfo("env:" + c.escape_id_segment(name), name, tse_path, True)
+            if any(env.id == item.id for env in config.tests.environments):
+                raise c.BackendError(c.ErrorCode.ALREADY_EXISTS, "Environment name already exists")
+            self._config = replace(
+                config, modified=True,
+                tests=replace(config.tests, environments=config.tests.environments + (item,)),
+            )
+            return item
+
+        return self._submit("test_setup.add_environment", ctx, effect, check)
 
     def add_test_module(
         self, environment_id: str, can_path: str, ctx: c.CallContext
     ) -> c.OperationStatus:
-        self._unsupported()
+        def check() -> None:
+            self._stopped()
+            env = self._find(self._need_config().tests.environments, environment_id)
+            if any(module.path == can_path for module in env.modules):
+                raise c.BackendError(c.ErrorCode.ALREADY_EXISTS, "Module already exists")
+
+        def effect() -> c.TestModuleInfo:
+            config = self._need_config()
+            env = self._find(config.tests.environments, environment_id)
+            name = Path(can_path).stem
+            item = c.TestModuleInfo(
+                "tm:" + c.escape_id_segment(env.name) + "/" + c.escape_id_segment(name),
+                name, can_path, True, False,
+            )
+            if any(module.id == item.id for module in env.modules):
+                raise c.BackendError(c.ErrorCode.ALREADY_EXISTS, "Module name already exists")
+            new = replace(env, modules=env.modules + (item,))
+            self._config = replace(
+                config, modified=True,
+                tests=replace(config.tests, environments=tuple(
+                    new if x == env else x for x in config.tests.environments
+                )),
+            )
+            return item
+
+        return self._submit("test_setup.add_module", ctx, effect, check)
 
     def set_test_module_enabled(
         self, module_id: str, enabled: bool, ctx: c.CallContext
     ) -> c.OperationStatus:
-        self._unsupported()
+        def modules() -> tuple[c.TestModuleInfo, ...]:
+            return tuple(m for env in self._need_config().tests.environments for m in env.modules)
+
+        def check() -> None:
+            self._stopped()
+            self._find(modules(), module_id)
+
+        def effect() -> c.TestModuleInfo:
+            config = self._need_config()
+            old = self._find(modules(), module_id)
+            new = replace(old, enabled=enabled)
+            environments = tuple(replace(env, modules=tuple(
+                new if m == old else m for m in env.modules
+            )) for env in config.tests.environments)
+            self._config = replace(
+                config, modified=True, tests=replace(config.tests, environments=environments)
+            )
+            return new
+
+        return self._submit("test_setup.set_enabled", ctx, effect, check)
 
     def start_test_run(self, spec: c.TestRunSpec, ctx: c.CallContext) -> c.TestRunStatus:
         self._unsupported()
