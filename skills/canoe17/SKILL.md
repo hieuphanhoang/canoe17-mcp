@@ -54,8 +54,8 @@ change unless write work is part of the user's task.
 - `stale_session`: an open/reopen or list change invalidated IDs/previews.
   Read again, obtain fresh IDs and preview again before confirming.
 - Pending operation: retain `operation_id` and call `canoe_operation` with
-  `{"action":"status","operation_id":"<returned ID>","wait":1}`. Poll
-  with a short wait; never repeat the originating mutation to wait for it.
+  `{"action":"status","operation_id":"<returned ID>"}`. Pause briefly
+  between polls; never repeat the originating mutation to wait for it.
 - `outcome_unknown` or a client timeout: do not retry the mutation blindly.
   Poll a known ID and inspect fresh state. If no ID arrived, ask the operator
   to reconcile state before another mutation. Cancellation only requests a
