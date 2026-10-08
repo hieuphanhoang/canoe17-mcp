@@ -190,7 +190,10 @@ def test_server_edit_tools_and_audit(sandbox: Path, tmp_path: Path):
                 # Attach-on-read: summary before any open, CANoe already running.
                 summary = await demo.call("canoe_get_config_summary", {"section": "all"})
                 if "error" in summary:
-                    pytest.skip(f"CANoe not running for attach-on-read: {summary['error']}")
+                    # Only a missing prerequisite skips; any other failure fails (CONTRIBUTING).
+                    if summary["error"]["code"] == "no_active_instance":
+                        pytest.skip("CANoe is not running; attach-on-read needs it")
+                    pytest.fail(f"attach-on-read failed: {summary['error']}")
                 path = summary["result"]["value"]["configuration_path"]
                 if (
                     path.lower() != str(cfg).lower()
@@ -278,5 +281,28 @@ def test_server_edit_tools_and_audit(sandbox: Path, tmp_path: Path):
     confirmed = sum(1 for e in transcript[1:] if e.get("arguments", {}).get("confirm") is True)
     attempts = [r for r in records if r["result"].get("state") == "attempt"]
     assert len(attempts) == confirmed
-    text = audit.read_text(encoding="utf-8")
-    assert str(sandbox).replace("\\", "\\\\") not in text and "DemoNode" not in text  # redacted
+
+    # Audit says what changed (review A2) but not client-invented text.
+    def attempt(tool: str, action: str) -> dict[str, Any]:
+        found = [r for r in attempts if r["tool"] == tool and r["params"].get("action") == action]
+        assert len(found) == 1, (tool, action, found)
+        return found[0]
+
+    for record in attempts:
+        if record["tool"] != "canoe_open_config":
+            assert record["configuration_path"].lower() == str(cfg).lower(), record
+    node_add = attempt("canoe_node", "add")["params"]
+    assert node_add["name"] == "[redacted]" and node_add["bus"] == "CAN"
+    assert node_add["capl_path"].lower() == str(capl).lower()
+    assert attempt("canoe_node", "set_active")["params"]["node_id"] == "node:DemoNode"
+    assert attempt("canoe_database", "add")["params"]["path"].lower() == str(dbc).lower()
+    assert attempt("canoe_database", "remove")["params"]["database_id"] == "db:easy"
+    assert (
+        attempt("canoe_test_setup", "add_environment")["params"]["tse_path"].lower()
+        == str(tse).lower()
+    )
+    finals = {
+        r["call_id"]: r["result"]["state"] for r in records if r["result"].get("state") != "attempt"
+    }
+    assert {r["call_id"] for r in attempts} <= set(finals)
+    assert all(finals[r["call_id"]] == "completed" for r in attempts), finals
