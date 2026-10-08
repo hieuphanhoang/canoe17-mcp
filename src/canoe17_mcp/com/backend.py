@@ -248,37 +248,51 @@ class ComBackend:
         self.store.put_cache(name, value, epoch)  # ignored if the epoch moved on
         return self.store.observed(value, epoch=epoch)
 
-    def _bump_epoch(self) -> int:
-        """New session state: invalidate IDs and watchers of the old one (review C4)."""
+    def _bump_epoch(self, *, opening: bool = False) -> int:
+        """New session state: invalidate IDs and watchers of the old one (review C4).
+
+        ``opening=True`` only for the bumps an open in progress expects (its own
+        Open, CANoe's OnOpen, a save-copy): open watchers survive those. Quit,
+        connection loss and shutdown retire every watcher (review R4).
+        """
         epoch = self.store.bump_epoch()
         self.session.ids.clear()
         self._seen.clear()
         for w in list(self._watchers.values()):
-            if isinstance(w, _OpenWatcher):
-                continue  # an open in progress expects the bump; see _OpenWatcher
-            self._watchers.pop(w.operation_id, None)
-            op = self.store.get(w.operation_id)
-            if op is None or op.state not in (
-                OpState.RUNNING,
-                OpState.STOPPING,
-                OpState.OUTCOME_UNKNOWN,
-            ):
-                continue
+            if opening and isinstance(w, _OpenWatcher):
+                continue  # an open in progress expects this bump; see _OpenWatcher
+            kind = "open_config" if isinstance(w, _OpenWatcher) else w.kind
             # The session this operation acted on is gone; its confirming event can
             # no longer arrive, and events of the new session must not certify it.
-            # Resolve it as failed but say plainly that effects are possible.
-            self.store.finish(
+            self._resolve_uncertain(
                 w.operation_id,
-                OpState.FAILED,
-                error=ErrorInfo(
-                    ErrorCode.OUTCOME_UNKNOWN,
-                    f"The CANoe session changed (epoch {op.epoch} -> {epoch}) before "
-                    f"{w.kind} was confirmed. It may or may not have taken effect in the "
-                    "old session. Re-read the current state.",
-                    details=(("effects_possible", True),),
-                ),
+                f"The CANoe session changed (epoch {self._op_epoch(w)} -> {epoch}) before "
+                f"{kind} was confirmed. It may or may not have taken effect in the old "
+                "session. Re-read the current state.",
             )
         return epoch
+
+    def _op_epoch(self, w: _Watcher | _OpenWatcher) -> int | str:
+        op = self.store.get(w.operation_id)
+        return op.epoch if op is not None else "?"
+
+    def _resolve_uncertain(self, operation_id: str, message: str) -> None:
+        """Remove a watcher and end its operation as failed with an uncertain outcome."""
+        self._watchers.pop(operation_id, None)
+        op = self.store.get(operation_id)
+        if op is None or op.state not in (
+            OpState.RUNNING,
+            OpState.STOPPING,
+            OpState.OUTCOME_UNKNOWN,
+        ):
+            return
+        self.store.finish(
+            operation_id,
+            OpState.FAILED,
+            error=ErrorInfo(
+                ErrorCode.OUTCOME_UNKNOWN, message, details=(("effects_possible", True),)
+            ),
+        )
 
     def _save_with_backup(self, step: StepContext, cfg: Any, target: str | None) -> str | None:
         """The only overwrite path (review C5). Back up the file that will be
@@ -375,7 +389,7 @@ class ComBackend:
     def _handle_event(self, name: str, args: tuple[Any, ...]) -> None:
         if name == "App.OnOpen":
             path = args[0] if args else ""
-            self._bump_epoch()  # always: ours or a GUI open (review R1)
+            self._bump_epoch(opening=True)  # always bumps: ours or a GUI open (R1)
             self.store.update_session(configuration_path=path or None)
             settle = time.monotonic() + OPEN_SETTLE_S
             for w in self._watchers.values():
@@ -419,14 +433,25 @@ class ComBackend:
         settled = w.settle_until is not None and now >= w.settle_until
         if not settled and now < w.deadline:
             return
-        self._watchers.pop(w.operation_id, None)
         op = self.store.get(w.operation_id)
         if op is None or op.state not in (OpState.RUNNING, OpState.OUTCOME_UNKNOWN):
+            self._watchers.pop(w.operation_id, None)
             return
         if w.settle_until is None:
             # Open() returned but no OnOpen arrived: still a new session.
-            self._bump_epoch()
-        fields = self.session.session_fields()
+            self._bump_epoch(opening=True)
+        try:
+            if not self.session.connected:
+                raise BackendError(ErrorCode.NOT_CONNECTED, "CANoe connection lost.")
+            fields = self.session.session_fields()
+        except Exception as exc:  # noqa: BLE001 - must never orphan the operation (R4)
+            self._resolve_uncertain(
+                w.operation_id,
+                "open_config: the configuration could not be read back after Open "
+                f"({exc!r}). It may or may not be open. Re-read the current state.",
+            )
+            return
+        self._watchers.pop(w.operation_id, None)
         self.store.update_session(**fields)
         self.store.finish(
             w.operation_id,
@@ -443,6 +468,8 @@ class ComBackend:
 
     def _on_shutdown(self) -> None:
         self._disconnect_on_worker()
+        if self._watchers:
+            self._bump_epoch()  # retire pending watchers; their outcome is unknown
 
     # ================================================================ session
 
@@ -511,7 +538,7 @@ class ComBackend:
                 saved_to = str(cfg.FullName)
             step.dispatch("opening")
             app.Open(path, False, False)
-            self._bump_epoch()
+            self._bump_epoch(opening=True)
             self.store.update_session(**self.session.session_fields())
             assert step.operation_id is not None
             step.phase("awaiting_on_open")
@@ -539,7 +566,7 @@ class ComBackend:
             backup = self._save_with_backup(step, cfg, as_path)
             active = str(self.session.app.Configuration.FullName)
             changed = active.lower() != before.lower()
-            epoch = self._bump_epoch() if changed else self.store.epoch
+            epoch = self._bump_epoch(opening=True) if changed else self.store.epoch
             self.store.update_session(**self.session.cheap_fields())
             return SaveResult(
                 saved_path=as_path or before,

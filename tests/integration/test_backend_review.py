@@ -392,3 +392,73 @@ def test_open_preview_launches_only_without_a_canoe_process(
     assert backend.preview(request).value.launches_canoe is False
     monkeypatch.setattr(backend_module, "canoe_processes", lambda: [])
     assert backend.preview(request).value.launches_canoe is True
+
+
+# R4: an open awaiting OnOpen must never be orphaned ------------------------------
+
+
+def _pending_open(backend: ComBackend, *, settled: bool) -> str:
+    from canoe17_mcp.com.backend import _OpenWatcher
+
+    op = backend.store.new_operation("open_config", backend.store.epoch)
+    backend.store.try_start(op.operation_id)
+    backend.store.mark_dispatched(op.operation_id, "awaiting_on_open")
+    backend._watchers[op.operation_id] = _OpenWatcher(
+        op.operation_id,
+        time.monotonic() + 60,
+        True,
+        False,
+        None,
+        None,
+        settle_until=time.monotonic() - 1 if settled else None,
+    )
+    return op.operation_id
+
+
+@pytest.mark.parametrize("event", ["App.OnQuit", "connection_lost"])
+def test_quit_or_lost_connection_resolves_pending_open(
+    backend: ComBackend, tmp_path: Path, event: str
+):
+    attach(backend, FakeApp(cfg_file(tmp_path), modified=False, running=False))
+    op_id = _pending_open(backend, settled=False)
+    if event == "App.OnQuit":
+        backend._handle_event("App.OnQuit", ())
+    else:
+        backend._disconnect_on_worker()
+        backend._bump_epoch()
+    done = backend.store.get(op_id)
+    assert done is not None and done.state is OpState.FAILED
+    assert done.error is not None and done.error.code is ErrorCode.OUTCOME_UNKNOWN
+    assert done.effects_possible and op_id not in backend._watchers
+    assert not backend.store.degraded
+
+
+def test_failing_final_read_resolves_pending_open(backend: ComBackend, tmp_path: Path):
+    app = FakeApp(cfg_file(tmp_path), modified=False, running=False)
+    attach(backend, app)
+    op_id = _pending_open(backend, settled=True)
+
+    class Broken:
+        @property
+        def Configuration(self) -> Any:  # noqa: N802
+            raise RuntimeError("COM call failed")
+
+        Version = app.Version
+        FullName = app.FullName
+
+    backend.session.app = Broken()
+    backend._on_loop()
+    done = backend.store.get(op_id)
+    assert done is not None and done.state is OpState.FAILED
+    assert done.error is not None and done.error.code is ErrorCode.OUTCOME_UNKNOWN
+    assert op_id not in backend._watchers
+    backend.session.app = None
+
+
+def test_expected_open_bump_keeps_pending_open(backend: ComBackend, tmp_path: Path):
+    attach(backend, FakeApp(cfg_file(tmp_path), modified=False, running=False))
+    op_id = _pending_open(backend, settled=False)
+    backend._handle_event("App.OnOpen", (str(tmp_path / "Demo.cfg"),))
+    current = backend.store.get(op_id)
+    assert current is not None and current.state is OpState.RUNNING
+    assert op_id in backend._watchers
