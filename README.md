@@ -41,6 +41,9 @@ attaches to CANoe; `canoe_status` does not attach or launch. Launch and dirty-st
 handling are explicit open arguments. Cancellation cannot undo a dispatched RPC
 or establish that a measurement stopped. Poll returned operation IDs to inspect
 completion, failure or an uncertain outcome; do not blindly retry uncertain calls.
+Confirmed mutations wait up to `[backend].operation_default_timeout_s` (30 s by
+default); if launch/open takes longer, poll `canoe_operation` with the returned
+`operation_id` instead of issuing the mutation again.
 
 Settings load from TOML with `CANOE17_MCP_*` environment overrides. Backend
 selection uses `CANOE17_MCP_BACKEND_KIND=com|fake`; arrays, booleans and numbers
